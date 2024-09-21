@@ -95,6 +95,20 @@ export default (validatorService: ValidatorService, performanceMetricsService: P
     }
   });
 
+  router.get('/:address/uptime', async (req, res) => {
+    try {
+      const { address } = req.params;
+      const uptime = await performanceMetricsService.calculateUptime(address, 30 * 60); // 30 minutes
+      res.json({ address, uptime });
+    } catch (error) {
+      if (error instanceof Error) {
+        res.status(500).json({ error: error.message });
+      } else {
+        res.status(500).json({ error: 'Bilinmeyen bir hata oluştu' });
+      }
+    }
+  });
+
   function formatRewards(rewards: bigint): string {
     return new Intl.NumberFormat('en-US', { style: 'decimal', maximumFractionDigits: 2 }).format(Number(rewards) / 1e9) + ' ALEO';
   }

@@ -12,11 +12,11 @@ export class ValidatorService {
     try {
       const committee = await this.aleoSDKService.getLatestCommittee();
       const dbValidators = await this.snarkOSDBService.getValidators();
-  
+
       for (const [address, data] of Object.entries(committee.members)) {
         const [stake, isActive, bonded] = data as [number, boolean, number];
         const dbValidator = dbValidators.find((v: { address: string }) => v.address === address);
-  
+
         if (dbValidator) {
           await this.snarkOSDBService.executeQuery(
             'UPDATE validators SET stake = $1, is_active = $2, bonded = $3, last_seen = NOW() WHERE address = $4',
@@ -29,7 +29,7 @@ export class ValidatorService {
           );
         }
       }
-  
+
       logger.info(`${Object.keys(committee.members).length} validators successfully updated.`);
     } catch (error: unknown) {
       if (error instanceof Error) {

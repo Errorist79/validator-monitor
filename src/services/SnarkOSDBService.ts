@@ -45,13 +45,26 @@ export class SnarkOSDBService {
         CREATE INDEX IF NOT EXISTS idx_blocks_validator_address ON blocks(validator_address);
         CREATE INDEX IF NOT EXISTS idx_blocks_timestamp ON blocks(timestamp);
 
-        -- Eğer previous_hash sütunu yoksa ekle
+        CREATE TABLE IF NOT EXISTS committee_entries (
+          id SERIAL PRIMARY KEY,
+          validator_address TEXT NOT NULL,
+          start_height BIGINT NOT NULL,
+          end_height BIGINT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         DO $$
         BEGIN
-          IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='blocks' AND column_name='previous_hash') THEN
-            ALTER TABLE blocks ADD COLUMN previous_hash TEXT;
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_indexes 
+            WHERE indexname = 'idx_committee_entries_unique'
+          ) THEN
+            CREATE UNIQUE INDEX idx_committee_entries_unique ON committee_entries(validator_address, start_height);
           END IF;
         END $$;
+
+        CREATE INDEX IF NOT EXISTS idx_committee_entries_validator ON committee_entries(validator_address);
+        CREATE INDEX IF NOT EXISTS idx_committee_entries_height ON committee_entries(start_height, end_height);
       `);
       console.log("Database tables and indexes successfully created and updated");
       
@@ -105,40 +118,23 @@ export class SnarkOSDBService {
   }
 
   async insertBlock(block: Block): Promise<void> {
-    const client = await this.pool.connect();
     try {
-      await client.query('BEGIN');
-      console.log("Inserting block:", JSON.stringify(block, (key, value) =>
-        typeof value === 'bigint' ? value.toString() : value
-      ));
-      await client.query(
-        'INSERT INTO blocks (height, hash, previous_hash, timestamp, transactions_count, validator_address, total_fees) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-        [
-          block.height,
-          block.hash,
-          block.previous_hash,
-          block.timestamp ? new Date(block.timestamp).toISOString() : null,
-          block.transactions.length,
-          block.validator_address,
-          block.total_fees ? block.total_fees.toString() : null
-        ]
-      );
-      if (block.validator_address && block.total_fees) {
-        await client.query(
-          'UPDATE validators SET total_blocks_produced = total_blocks_produced + 1, total_rewards = total_rewards + $1, last_seen = $2 WHERE address = $3',
-          [block.total_fees.toString(), block.timestamp ? new Date(block.timestamp) : new Date(), block.validator_address]
-        );
-      }
-      await client.query('COMMIT');
-    } catch (error: unknown) {
-      await client.query('ROLLBACK');
-      if (error instanceof Error) {
-        console.error("Error details:", error);
-        throw new Error(`SnarkOS DB insertBlock error: ${error.message}`);
-      }
-      throw new Error('SnarkOS DB insertBlock error: An unknown error occurred');
-    } finally {
-      client.release();
+      await this.pool.query(`
+        INSERT INTO blocks (height, hash, previous_hash, timestamp, transactions_count, validator_address, total_fees)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (height) DO NOTHING
+      `, [
+        block.height,
+        block.hash,
+        block.previous_hash,
+        block.timestamp,
+        block.transactions.length,
+        block.validator_address,
+        block.total_fees
+      ]);
+    } catch (error) {
+      console.error("Error inserting block:", error);
+      throw error;
     }
   }
 
@@ -376,6 +372,93 @@ export class SnarkOSDBService {
       return parseInt(result.rows[0].validator_count);
     } catch (error) {
       logger.error('Error getting total validators count:', error);
+      throw error;
+    }
+  }
+
+  async getCommitteeEntriesForValidator(validatorAddress: string, timeFrame: number): Promise<any[]> {
+    try {
+      const result = await this.pool.query(`
+        SELECT start_height, end_height
+        FROM committee_entries
+        WHERE validator_address = $1
+        AND start_height >= (SELECT MAX(height) - $2 FROM blocks)
+        ORDER BY start_height DESC
+      `, [validatorAddress, timeFrame]);
+      return result.rows;
+    } catch (error) {
+      logger.error(`Error getting committee entries for validator ${validatorAddress}:`, error);
+      throw error;
+    }
+  }
+
+  async getBlockCountBetween(startHeight: number, endHeight: number): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(*) as block_count
+        FROM blocks
+        WHERE height BETWEEN $1 AND $2
+      `, [startHeight, endHeight]);
+      return parseInt(result.rows[0].block_count);
+    } catch (error) {
+      logger.error(`Error getting block count between heights ${startHeight} and ${endHeight}:`, error);
+      throw error;
+    }
+  }
+
+  async getBlocksCountByValidatorInRange(validatorAddress: string, startHeight: number, endHeight: number): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(*) as block_count
+        FROM blocks
+        WHERE validator_address = $1 AND height BETWEEN $2 AND $3
+      `, [validatorAddress, startHeight, endHeight]);
+      return parseInt(result.rows[0].block_count);
+    } catch (error) {
+      logger.error(`Error getting blocks count for validator ${validatorAddress} in range:`, error);
+      throw error;
+    }
+  }
+
+  async insertCommitteeEntry(validatorAddress: string, startHeight: number, endHeight: number | null): Promise<void> {
+    try {
+      await this.pool.query(`
+        INSERT INTO committee_entries (validator_address, start_height, end_height)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (validator_address, start_height) DO UPDATE SET
+          end_height = EXCLUDED.end_height
+      `, [validatorAddress, startHeight, endHeight]);
+    } catch (error) {
+      console.error("Error inserting committee entry:", error);
+      throw error;
+    }
+  }
+
+  async clearDatabase(): Promise<void> {
+    try {
+      await this.pool.query(`
+        TRUNCATE TABLE validators, blocks, committee_entries RESTART IDENTITY CASCADE;
+      `);
+      console.log("Database cleared successfully");
+    } catch (error) {
+      console.error("Error clearing database:", error);
+      throw error;
+    }
+  }
+
+  async insertOrUpdateValidator(address: string, stake: bigint): Promise<void> {
+    try {
+      await this.pool.query(`
+        INSERT INTO validators (address, stake, is_active, bonded, last_seen)
+        VALUES ($1, $2, true, $2, NOW())
+        ON CONFLICT (address) DO UPDATE SET
+          stake = $2,
+          is_active = true,
+          bonded = $2,
+          last_seen = NOW()
+      `, [address, stake.toString()]);
+    } catch (error) {
+      console.error("Error inserting or updating validator:", error);
       throw error;
     }
   }

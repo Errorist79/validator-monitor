@@ -18,6 +18,10 @@ const config = {
         secret: process.env.JWT_SECRET || 'your_jwt_secret',
         expiresIn: '1d',
     },
+    uptime: {
+        calculationPeriod: parseInt(process.env.UPTIME_CALCULATION_PERIOD || '1800', 10), // 30 dakika varsayılan
+        defaultValidatorAddress: process.env.DEFAULT_VALIDATOR_ADDRESS || '',
+    },
 };
 
 const sequelize = new Sequelize(config.database.url, {

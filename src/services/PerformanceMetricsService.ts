@@ -1,6 +1,7 @@
 import { CacheService } from './CacheService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
 import logger from '../utils/logger.js';
+import { config } from '../config/index.js';
 
 export class PerformanceMetricsService {
   private cacheService: CacheService;
@@ -21,7 +22,7 @@ export class PerformanceMetricsService {
 
       const blocksProposed = blocks.length;
       const transactionsProcessed = transactions.length;
-      const uptime = await this.calculateUptime(validatorAddress, timeFrame);
+      const uptime = await this.calculateUptime(validatorAddress, 30 * 60); // 30 minutes in seconds
       const averageResponseTime = await this.calculateAverageResponseTime(validatorAddress, timeFrame);
 
       return {
@@ -36,11 +37,45 @@ export class PerformanceMetricsService {
     }
   }
 
-  private async calculateUptime(validatorAddress: string, timeFrame: number): Promise<number> {
+  public async calculateUptime(validatorAddress: string, timeFrame?: number): Promise<number> {
+    const calculationPeriod = timeFrame || config.uptime.calculationPeriod;
+    
     try {
-      const totalBlocks = await this.snarkOSDBService.getTotalBlocksInTimeFrame(timeFrame);
-      const validatorBlocks = await this.snarkOSDBService.getBlocksCountByValidator(validatorAddress, timeFrame);
-      return (validatorBlocks / totalBlocks) * 100;
+      const committeeEntries = await this.snarkOSDBService.getCommitteeEntriesForValidator(validatorAddress, calculationPeriod);
+      logger.debug(`Committee entries for ${validatorAddress}:`, committeeEntries);
+
+      if (committeeEntries.length === 0) {
+        logger.warn(`No committee entries found for ${validatorAddress}`);
+        return 0;
+      }
+
+      let totalBlocksInCommittee = 0;
+      let blocksProduced = 0;
+
+      for (const entry of committeeEntries) {
+        const startHeight = Math.max(Number(entry.start_height), Number(entry.start_height) + calculationPeriod - Number(entry.end_height));
+        const endHeight = Number(entry.end_height);
+        
+        const blocksInPeriod = await this.snarkOSDBService.getBlockCountBetween(startHeight, endHeight);
+        logger.debug(`Blocks in period (${startHeight} - ${endHeight}):`, blocksInPeriod);
+        totalBlocksInCommittee += blocksInPeriod;
+
+        const validatorBlocksInPeriod = await this.snarkOSDBService.getBlocksCountByValidatorInRange(validatorAddress, startHeight, endHeight);
+        logger.debug(`Validator blocks in period (${startHeight} - ${endHeight}):`, validatorBlocksInPeriod);
+        blocksProduced += validatorBlocksInPeriod;
+      }
+
+      logger.debug(`Total blocks in committee: ${totalBlocksInCommittee}`);
+      logger.debug(`Blocks produced by validator: ${blocksProduced}`);
+
+      if (totalBlocksInCommittee === 0) {
+        logger.warn(`No blocks found in committee periods`);
+        return 0;
+      }
+
+      const uptime = (blocksProduced / totalBlocksInCommittee) * 100;
+      logger.info(`Calculated uptime for ${validatorAddress}: ${uptime}%`);
+      return uptime;
     } catch (error) {
       logger.error(`Error calculating uptime for validator ${validatorAddress}:`, error);
       throw error;

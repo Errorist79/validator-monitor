@@ -1,6 +1,7 @@
 import { SnarkOSDBService } from './SnarkOSDBService.js';
 import { PerformanceMetricsService } from './PerformanceMetricsService.js';
 import logger from '../utils/logger.js';
+import { config } from '../config/index.js';
 
 export class AlertService {
   constructor(
@@ -38,18 +39,14 @@ export class AlertService {
 
   async checkLowUptime(validatorAddress: string, threshold: number): Promise<boolean> {
     try {
-      const uptime = await this.snarkOSDBService.getValidatorUptime(validatorAddress);
+      const uptime = await this.performanceMetricsService.calculateUptime(validatorAddress);
       if (uptime < threshold) {
         logger.warn(`Validator ${validatorAddress} has low uptime: ${uptime}%, below threshold of ${threshold}%`);
         return true;
       }
       return false;
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        logger.error(`Error checking uptime for validator ${validatorAddress}: ${error.message}`);
-      } else {
-        logger.error(`Error checking uptime for validator ${validatorAddress}: Bilinmeyen hata`);
-      }
+    } catch (error) {
+      logger.error(`Error checking uptime for validator ${validatorAddress}:`, error);
       throw error;
     }
   }
@@ -110,23 +107,22 @@ export class AlertService {
     };
   }
 
-  async getValidatorHealthStatus(validatorAddress: string): Promise<{
-    status: 'healthy' | 'warning' | 'critical',
-    issues: string[]
-  }> {
-    const alerts = await this.checkAllAlerts(validatorAddress);
-    const issues = Object.entries(alerts)
-      .filter(([_, isAlert]) => isAlert)
-      .map(([alertType, _]) => this.getAlertDescription(alertType));
+  async getValidatorHealthStatus(validatorAddress: string): Promise<any> {
+    try {
+      const [lowUptime, lowRewards] = await Promise.all([
+        this.checkLowUptime(validatorAddress, 90), // 90% threshold for uptime
+        this.checkLowRewards(validatorAddress, BigInt(1000000), 24 * 60 * 60) // 1 ALEO threshold for 24 hours
+      ]);
 
-    let status: 'healthy' | 'warning' | 'critical' = 'healthy';
-    if (issues.length > 2) {
-      status = 'critical';
-    } else if (issues.length > 0) {
-      status = 'warning';
+      return {
+        address: validatorAddress,
+        lowUptime,
+        lowRewards
+      };
+    } catch (error) {
+      logger.error(`Error getting health status for validator ${validatorAddress}:`, error);
+      throw error;
     }
-
-    return { status, issues };
   }
 
   private getAlertDescription(alertType: string): string {

@@ -12,6 +12,7 @@ import { SyncService } from './services/SyncService.js';
 import { apiLimiter } from './api/middleware/rateLimiter';
 import { PerformanceMetricsService } from './services/PerformanceMetricsService.js';
 import { AlertService } from './services/AlertService.js';
+import cron from 'node-cron';
 
 const app = express();
 let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
@@ -99,6 +100,23 @@ async function main() {
         logger.error('Block synchronization failed:', error);
       });
     }, 5 * 60 * 1000); // Every 5 minutes
+
+    // Her 5 dakikada bir uptime hesaplaması ve alert kontrolü
+    cron.schedule('*/5 * * * *', async () => {
+      try {
+        const validators = await snarkOSDBService.getValidators();
+        for (const validator of validators) {
+          const uptime = await performanceMetricsService.calculateUptime(validator.address, 30 * 60);
+          const isLowUptime = await alertService.checkLowUptime(validator.address, 90);
+          if (isLowUptime) {
+            logger.warn(`Low uptime alert for validator ${validator.address}: ${uptime}%`);
+            // Burada alert gönderme işlemi yapılabilir (e-posta, SMS, vb.)
+          }
+        }
+      } catch (error) {
+        logger.error('Error during periodic uptime check:', error);
+      }
+    });
 
   } catch (error) {
     logger.error('Error occurred while starting the application:', error);
@@ -291,3 +309,65 @@ app.get('/api/alerts/:address', async (req, res) => {
     res.status(500).json({ error: 'Failed to check alerts' });
   }
 });
+
+type CommitteeMember = [number, boolean, number];
+
+async function testUptimeCalculation() {
+  const snarkOSDBService = new SnarkOSDBService(config.database.url);
+  const performanceMetricsService = new PerformanceMetricsService(snarkOSDBService);
+  const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
+
+  try {
+    // Veritabanını temizle
+    await snarkOSDBService.clearDatabase();
+    
+    await snarkOSDBService.initializeDatabase();
+
+    // Son komiteyi al ve validator'ları ekle
+    const latestCommittee = await aleoSDKService.getLatestCommittee();
+    if (latestCommittee && latestCommittee.members) {
+      for (const [address, data] of Object.entries(latestCommittee.members) as [string, CommitteeMember][]) {
+        await snarkOSDBService.insertOrUpdateValidator(address, BigInt(data[0])); // data[0] stake değeri
+      }
+    } else {
+      console.error("Failed to get latest committee");
+      return;
+    }
+
+    // Son 100 bloğu al
+    const latestBlock = await aleoSDKService.getLatestBlock();
+    if (!latestBlock || typeof latestBlock.height !== 'number') {
+      console.error("Failed to get latest block or block height is invalid");
+      return;
+    }
+
+    const startHeight = Math.max(1, latestBlock.height - 99);
+    
+    for (let height = startHeight; height <= latestBlock.height; height++) {
+      const block = await aleoSDKService.getBlockByHeight(height);
+      if (block) {
+        await snarkOSDBService.insertBlock(block);
+        // Committee entry'sini ekle
+        if (block.validator_address) {
+          await snarkOSDBService.insertCommitteeEntry(block.validator_address, height, height);
+        }
+      }
+    }
+
+    // Rastgele bir validator seç
+    const validators = await snarkOSDBService.getValidators();
+    if (validators.length === 0) {
+      console.error("No validators found");
+      return;
+    }
+    const randomValidator = validators[Math.floor(Math.random() * validators.length)];
+
+    // Uptime hesapla
+    const uptime = await performanceMetricsService.calculateUptime(randomValidator.address, 100);
+    console.log(`Calculated uptime for ${randomValidator.address}: ${uptime}%`);
+  } catch (error) {
+    console.error("Error during uptime calculation test:", error);
+  }
+}
+
+testUptimeCalculation();

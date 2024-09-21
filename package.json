@@ -11,7 +11,8 @@
     "build": "tsc",
     "start": "node --experimental-specifier-resolution=node dist/index.js",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "test": "jest"
+    "test": "jest",
+    "test:uptime": "node --experimental-specifier-resolution=node dist/tests/uptimeCalculation.test.js"
   },
   "keywords": [],
   "author": "",
