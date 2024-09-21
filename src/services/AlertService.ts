@@ -117,7 +117,7 @@ export class AlertService {
     const alerts = await this.checkAllAlerts(validatorAddress);
     const issues = Object.entries(alerts)
       .filter(([_, isAlert]) => isAlert)
-      .map(([alertType, _]) => alertType);
+      .map(([alertType, _]) => this.getAlertDescription(alertType));
 
     let status: 'healthy' | 'warning' | 'critical' = 'healthy';
     if (issues.length > 2) {
@@ -127,6 +127,16 @@ export class AlertService {
     }
 
     return { status, issues };
+  }
+
+  private getAlertDescription(alertType: string): string {
+    const descriptions: { [key: string]: string } = {
+      missedBlocks: 'Validator has missed too many blocks',
+      lowUptime: 'Validator has low uptime',
+      lowRewards: 'Validator has low rewards',
+      lowEfficiency: 'Validator has low efficiency'
+    };
+    return descriptions[alertType] || 'Unknown issue';
   }
 }
 

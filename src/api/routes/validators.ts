@@ -71,7 +71,7 @@ export default (validatorService: ValidatorService, performanceMetricsService: P
       const { address } = req.params;
       const { timeFrame } = req.query;
       const rewards = await performanceMetricsService.getValidatorRewards(address, Number(timeFrame) || 24 * 60 * 60);
-      res.json({ rewards: rewards.toString() });
+      res.json({ rewards: rewards.toString(), formattedRewards: formatRewards(rewards) });
     } catch (error) {
       if (error instanceof Error) {
         res.status(500).json({ error: error.message });
@@ -94,6 +94,10 @@ export default (validatorService: ValidatorService, performanceMetricsService: P
       }
     }
   });
+
+  function formatRewards(rewards: bigint): string {
+    return new Intl.NumberFormat('en-US', { style: 'decimal', maximumFractionDigits: 2 }).format(Number(rewards) / 1e9) + ' ALEO';
+  }
 
   return router;
 };

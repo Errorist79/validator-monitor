@@ -351,6 +351,34 @@ export class SnarkOSDBService {
       throw error;
     }
   }
+
+  async getBlocksCountByValidator(validatorAddress: string, timeFrame: number): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(*) as block_count
+        FROM blocks
+        WHERE validator_address = $1 AND timestamp > NOW() - INTERVAL '1 second' * $2
+      `, [validatorAddress, timeFrame]);
+      return parseInt(result.rows[0].block_count);
+    } catch (error) {
+      logger.error(`Error getting blocks count for validator ${validatorAddress}:`, error);
+      throw error;
+    }
+  }
+
+  async getTotalValidatorsCount(): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(*) as validator_count
+        FROM validators
+        WHERE is_active = true
+      `);
+      return parseInt(result.rows[0].validator_count);
+    } catch (error) {
+      logger.error('Error getting total validators count:', error);
+      throw error;
+    }
+  }
 }
 
 export default SnarkOSDBService;

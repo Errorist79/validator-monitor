@@ -39,8 +39,8 @@ export class PerformanceMetricsService {
   private async calculateUptime(validatorAddress: string, timeFrame: number): Promise<number> {
     try {
       const totalBlocks = await this.snarkOSDBService.getTotalBlocksInTimeFrame(timeFrame);
-      const validatorBlocks = await this.snarkOSDBService.getBlocksByValidator(validatorAddress, timeFrame);
-      return (validatorBlocks.length / totalBlocks) * 100;
+      const validatorBlocks = await this.snarkOSDBService.getBlocksCountByValidator(validatorAddress, timeFrame);
+      return (validatorBlocks / totalBlocks) * 100;
     } catch (error) {
       logger.error(`Error calculating uptime for validator ${validatorAddress}:`, error);
       throw error;
@@ -54,7 +54,7 @@ export class PerformanceMetricsService {
 
       let totalTimeDiff = 0;
       for (let i = 1; i < blocks.length; i++) {
-        const timeDiff = new Date(blocks[i].timestamp).getTime() - new Date(blocks[i-1].timestamp).getTime();
+        const timeDiff = Math.abs(new Date(blocks[i].timestamp).getTime() - new Date(blocks[i-1].timestamp).getTime());
         totalTimeDiff += timeDiff;
       }
 
@@ -66,15 +66,44 @@ export class PerformanceMetricsService {
   }
 
   async getValidatorEfficiency(validatorAddress: string, timeFrame: number): Promise<number> {
+    const cacheKey = `validator_efficiency_${validatorAddress}_${timeFrame}`;
+    const cachedData = this.cacheService.get(cacheKey);
+    if (cachedData !== undefined) {
+      return cachedData;
+    }
+
     try {
-      const blocks = await this.snarkOSDBService.getBlocksByValidator(validatorAddress, timeFrame);
-      const totalBlocks = blocks.length;
-      const successfulBlocks = blocks.filter(block => block.transactions_count > 0).length;
-      return (successfulBlocks / totalBlocks) * 100;
+      const [blocksProduced, totalBlocks] = await Promise.all([
+        this.snarkOSDBService.getBlocksCountByValidator(validatorAddress, timeFrame),
+        this.snarkOSDBService.getTotalBlocksInTimeFrame(timeFrame)
+      ]);
+
+      const totalValidatorsCount = await this.getTotalValidatorsCount();
+      if (typeof totalValidatorsCount !== 'number' || totalValidatorsCount <= 0) {
+        throw new Error('Invalid total validators count');
+      }
+
+      const expectedBlocks = Math.floor(totalBlocks / totalValidatorsCount);
+      const efficiency = (blocksProduced / expectedBlocks) * 100;
+
+      this.cacheService.set(cacheKey, efficiency);
+      return efficiency;
     } catch (error) {
-      logger.error(`Error calculating efficiency for validator ${validatorAddress}:`, error);
+      logger.error(`Error calculating validator efficiency for ${validatorAddress}:`, error);
       throw error;
     }
+  }
+
+  private async getTotalValidatorsCount(): Promise<number> {
+    const cacheKey = 'total_validators_count';
+    const cachedCount = this.cacheService.get(cacheKey);
+    if (cachedCount !== undefined) {
+      return cachedCount;
+    }
+
+    const count = await this.snarkOSDBService.getTotalValidatorsCount();
+    this.cacheService.set(cacheKey, count);
+    return count;
   }
 
   async getValidatorRewards(validatorAddress: string, timeFrame: number): Promise<bigint> {
