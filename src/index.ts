@@ -2,13 +2,20 @@ import express from 'express';
 // import RestApiService from './services/RestApiService.js';
 import ValidatorService from './services/ValidatorService.js';
 import BlockService from './services/BlockService.js';
-import AlertService from './services/AlertService.js';
 import ConsensusService from './services/ConsensusService.js';
 import PrimaryService from './services/PrimaryService.js';
 import api from './api/index.js';
 import logger from './utils/logger.js';
-import { sequelize, User, config, initDatabase } from './config/index.js';
 // import { authMiddleware } from './api/middleware/auth.js';
+import { SyncService } from './services/SyncService.js';
+import { apiLimiter } from './api/middleware/rateLimiter';
+import { PerformanceMetricsService } from './services/PerformanceMetricsService.js';
+import { AlertService } from './services/AlertService.js';
+import cron from 'node-cron';
+import { SnarkOSDBService } from './services/SnarkOSDBService.js';
+import { config } from './config/index.js';
+import AleoSDKService from './services/AleoSDKService.js';
+import { NotFoundError, ValidationError } from './utils/errors.js';
 
 const app = express();
 let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
@@ -17,11 +24,14 @@ let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
 
 logger.info(`Initializing AleoSDKService with URL: ${config.aleo.sdkUrl} and network type: ${config.aleo.networkType}`);
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
-const snarkOSDBService = new SnarkOSDBService(config.database.url);
-const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService);
+const snarkOSDBService = new SnarkOSDBService();
+const performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService);
+const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, performanceMetricsService);
 const blockService = new BlockService(aleoSDKService, snarkOSDBService);
 const consensusService = new ConsensusService(aleoSDKService);
 const primaryService = new PrimaryService(aleoSDKService);
+const syncService = new SyncService(aleoSDKService, snarkOSDBService);
+const alertService = new AlertService(snarkOSDBService, performanceMetricsService);
 
 logger.info(`ConsensusService initialized with URL: ${config.aleo.sdkUrl}`);
 
@@ -66,29 +76,79 @@ function startServer() {
 
 async function main() {
   try {
-    await initDatabase();
+    logger.info('Initializing database...');
     await snarkOSDBService.initializeDatabase();
+    logger.info('Database initialized successfully');
+
+    logger.info('Checking and updating database schema...');
+    await snarkOSDBService.checkAndUpdateSchema();
+    logger.info('Database schema check and update completed');
+
+    // Diğer başlatma işlemleri...
     await tryConnect();
     startServer();
 
     // Periodic validator update
     setInterval(async () => {
-      await validatorService.updateValidators();
+      try {
+        await validatorService.updateValidators();
+      } catch (error) {
+        logger.error('Error updating validators:', error);
+      }
     }, 60 * 60 * 1000); // Every hour
 
     // Perform the first validator update immediately
-    await validatorService.updateValidators();
+    try {
+      await validatorService.updateValidators();
+    } catch (error) {
+      logger.error('Error performing initial validator update:', error);
+    }
 
     // Periodic block synchronization
     setInterval(async () => {
-      await blockService.syncBlocks();
+      try {
+        await syncService.syncLatestBlocks(100);
+      } catch (error) {
+        logger.error('Block synchronization failed:', error);
+      }
     }, 5 * 60 * 1000); // Every 5 minutes
 
     // Perform the first block synchronization immediately
-    await blockService.syncBlocks();
+    try {
+      await syncService.syncLatestBlocks(100);
+    } catch (error) {
+      logger.error('Error performing initial block synchronization:', error);
+    }
+
+    // Her 5 dakikada bir uptime hesaplaması
+    cron.schedule('*/5 * * * *', async () => {
+      try {
+        const validators = await snarkOSDBService.getValidators();
+        for (const validator of validators) {
+          await validatorService.updateValidatorUptime(validator.address);
+        }
+        logger.info('Uptime calculation completed for all validators');
+      } catch (error) {
+        logger.error('Error during periodic uptime calculation:', error);
+      }
+    });
+
+    // Her saat başı validator bilgilerini güncelle
+    cron.schedule('0 * * * *', async () => {
+      try {
+        await validatorService.updateValidators();
+        logger.info('Validator information updated');
+      } catch (error) {
+        logger.error('Error updating validator information:', error);
+      }
+    });
 
   } catch (error) {
     logger.error('Error occurred while starting the application:', error);
+    if (error instanceof Error) {
+      logger.error('Error details:', error.message);
+      logger.error('Error stack:', error.stack);
+    }
     process.exit(1);
   }
 }
@@ -98,7 +158,7 @@ main().catch(error => {
   process.exit(1);
 });
 
-app.use('/api', api(validatorService, blockService));
+app.use('/api', api(validatorService, blockService, performanceMetricsService, alertService));
 
 app.get('/api/validators', async (req, res) => {
   try {
@@ -206,43 +266,26 @@ app.get('/api/test/transactions/:height', async (req, res) => {
   }
 });
 
-// Database usage example
-app.get('/api/users', async (req, res) => {
-  try {
-    const users = await User.findAll();
-    res.json(users);
-  } catch (error) {
-    logger.error('Error occurred while fetching user information:', error);
-    res.status(500).json({ error: 'Failed to fetch user information' });
-  }
-});
-
 // Add below the existing imports
-import AleoSDKService from './services/AleoSDKService.js';
 
 // Add below other routes
 app.get('/api/test/latest-block-structure', async (req, res) => {
   try {
     const latestBlock = await aleoSDKService.getLatestBlock();
-    res.json(latestBlock);
+    if (latestBlock) {
+      res.json(latestBlock);
+    } else {
+      res.status(404).json({ error: 'Latest block not found' });
+    }
   } catch (error) {
     logger.error('Error fetching latest block structure:', error);
-    res.status(500).json({ error: 'Failed to fetch latest block structure' });
-  }
-});
-
-// Add next to other imports
-import { SnarkOSDBService } from './services/SnarkOSDBService.js';
-
-// Add next to other routes
-app.get('/api/test/database', async (req, res) => {
-  try {
-    const snarkOSDBService = new SnarkOSDBService(config.database.url);
-    await snarkOSDBService.testDatabaseOperations();
-    res.json({ message: 'Database test operations completed. Check the logs.' });
-  } catch (error) {
-    logger.error('Database test endpoint error:', error);
-    res.status(500).json({ error: 'An error occurred during database test operations' });
+    if (error instanceof ValidationError) {
+      res.status(400).json({ error: error.message });
+    } else if (error instanceof NotFoundError) {
+      res.status(404).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: 'Failed to fetch latest block structure' });
+    }
   }
 });
 
@@ -256,3 +299,16 @@ app.get('/api/test/raw-latest-block', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch raw latest block' });
   }
 });
+
+app.get('/api/alerts/:address', async (req, res) => {
+  try {
+    const { address } = req.params;
+    const alerts = await alertService.checkAllAlerts(address);
+    res.json(alerts);
+  } catch (error) {
+    logger.error('Error checking alerts:', error);
+    res.status(500).json({ error: 'Failed to check alerts' });
+  }
+});
+
+type CommitteeMember = [number, boolean, number];

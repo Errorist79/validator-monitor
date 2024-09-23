@@ -1,11 +1,10 @@
-import { Sequelize, DataTypes } from 'sequelize';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const config = {
     database: {
-        url: process.env.DATABASE_URL || 'postgres://user:password@localhost:5432/aleo_monitor',
+        url: process.env.DATABASE_URL || 'postgres://postgres:admin@localhost:5432/aleo',
     },
     api: {
         port: process.env.PORT || 3000,
@@ -18,42 +17,12 @@ const config = {
         secret: process.env.JWT_SECRET || 'your_jwt_secret',
         expiresIn: '1d',
     },
+    uptime: {
+        calculationBlockRange: parseInt(process.env.UPTIME_CALCULATION_BLOCK_RANGE || '100', 10),
+        // Diğer ayarlar...
+    },
+    redis: {
+        url: process.env.REDIS_URL || 'redis://localhost:6379',
+    },
 };
-
-const sequelize = new Sequelize(config.database.url, {
-    logging: console.log,
-});
-
-// Define User model
-const User = sequelize.define('User', {
-    username: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true,
-    },
-    email: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        unique: true,
-    },
-});
-
-// Initialize and test database connection
-export async function initDatabase() {
-    try {
-        await sequelize.authenticate();
-        console.log('Successfully connected to the database.');
-
-        // Synchronize models (create tables)
-        await sequelize.sync({ alter: true }); // Using alter: true instead of force: true
-        console.log('Database models synchronized.');
-
-    } catch (error) {
-        console.error('Error occurred while initializing the database:', error);
-        throw error; // Throw the error up
-    }
-}
-
-// We're not calling initDatabase function here
-
-export { sequelize, User, config };
+export { config };

@@ -1,36 +1,32 @@
 import { AleoSDKService } from './AleoSDKService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
+import { PerformanceMetricsService } from './PerformanceMetricsService.js';
 import logger from '../utils/logger.js';
 
 export class ValidatorService {
   constructor(
     private aleoSDKService: AleoSDKService,
-    public snarkOSDBService: SnarkOSDBService
+    private snarkOSDBService: SnarkOSDBService,
+    private performanceMetricsService: PerformanceMetricsService
   ) {}
 
   async updateValidators(): Promise<void> {
     try {
-      const committee = await this.aleoSDKService.getLatestCommittee();
+      const committeeInfo = await this.aleoSDKService.getLatestCommittee();
       const dbValidators = await this.snarkOSDBService.getValidators();
-  
-      for (const [address, data] of Object.entries(committee.members)) {
-        const [stake, isActive, bonded] = data as [number, boolean, number];
+
+      for (const [address, data] of Object.entries(committeeInfo.members)) {
+        const [stake, isActive, commission] = data;
         const dbValidator = dbValidators.find((v: { address: string }) => v.address === address);
-  
+
         if (dbValidator) {
-          await this.snarkOSDBService.executeQuery(
-            'UPDATE validators SET stake = $1, is_active = $2, bonded = $3, last_seen = NOW() WHERE address = $4',
-            [stake, isActive, bonded, address]
-          );
+          await this.snarkOSDBService.updateValidator(address, BigInt(stake), isActive, BigInt(commission));
         } else {
-          await this.snarkOSDBService.executeQuery(
-            'INSERT INTO validators (address, stake, is_active, bonded, last_seen) VALUES ($1, $2, $3, $4, NOW())',
-            [address, stake, isActive, bonded]
-          );
+          await this.snarkOSDBService.insertValidator(address, BigInt(stake), isActive, BigInt(commission));
         }
       }
-  
-      logger.info(`${Object.keys(committee.members).length} validators successfully updated.`);
+
+      logger.info(`${Object.keys(committeeInfo.members).length} validators successfully updated.`);
     } catch (error: unknown) {
       if (error instanceof Error) {
         logger.error(`Validator update error: ${error.message}`);
@@ -38,6 +34,15 @@ export class ValidatorService {
         logger.error('An unknown error occurred during validator update');
       }
     }
+  }
+
+  async getValidator(address: string): Promise<any> {
+    const validators = await this.snarkOSDBService.getValidators();
+    const validator = validators.find(v => v.address === address);
+    if (!validator) {
+      throw new Error('Validator not found');
+    }
+    return validator;
   }
 
   async getValidatorPerformance(address: string): Promise<any> {
@@ -55,12 +60,19 @@ export class ValidatorService {
       const performance = {
         blocksProduced: recentBlocks.length,
         averageBlockTime: this.calculateAverageBlockTime(recentBlocks),
-        totalFees: this.calculateTotalFees(recentBlocks),
+        totalFees: this.calculateTotalFees(recentBlocks).toString(), // BigInt'i string'e çevir
         totalBlocksProduced: validator.rows[0].total_blocks_produced,
-        totalRewards: validator.rows[0].total_rewards
+        totalRewards: validator.rows[0].total_rewards.toString()
       };
 
-      return { validator: validator.rows[0], performance };
+      return {
+        validator: {
+          ...validator.rows[0],
+          stake: validator.rows[0].stake.toString(), // BigInt'i string'e çevir
+          bonded: validator.rows[0].bonded.toString() // BigInt'i string'e çevir
+        },
+        performance
+      };
     } catch (error: unknown) {
       if (error instanceof Error) {
         throw new Error(`Validator performance calculation error: ${error.message}`);
@@ -68,6 +80,38 @@ export class ValidatorService {
         throw new Error('An unknown error occurred during validator performance calculation');
       }
     }
+  }
+
+  async updateValidatorUptime(validatorAddress: string): Promise<void> {
+    try {
+      const uptime = await this.performanceMetricsService.calculateUptime(validatorAddress);
+      const lastUptimeUpdate = new Date();
+      if (uptime !== null) {
+        await this.snarkOSDBService.updateValidatorUptime(validatorAddress, uptime, lastUptimeUpdate);
+        logger.info(`Updated uptime for validator ${validatorAddress}: ${uptime}%`);
+      } else {
+        logger.warn(`Unable to calculate uptime for validator ${validatorAddress}`);
+      }
+    } catch (error) {
+      logger.error(`Error updating uptime for validator ${validatorAddress}:`, error);
+      throw error;
+    }
+  }
+
+  async updateAllValidatorsUptime(): Promise<void> {
+    try {
+      const validators = await this.snarkOSDBService.getValidators();
+      for (const validator of validators) {
+        await this.updateValidatorUptime(validator.address);
+      }
+      logger.info('Updated uptime for all validators');
+    } catch (error) {
+      logger.error('Error updating uptime for all validators:', error);
+    }
+  }
+
+  async getAllValidators(): Promise<any[]> {
+    return this.snarkOSDBService.getValidators();
   }
 
   private calculateAverageBlockTime(blocks: any[]): number {
@@ -78,8 +122,8 @@ export class ValidatorService {
     return timeDiffs.reduce((sum, diff) => sum + diff, 0) / timeDiffs.length;
   }
 
-  private calculateTotalFees(blocks: any[]): bigint {
-    return blocks.reduce((sum, block) => sum + BigInt(block.total_fees), BigInt(0));
+  private calculateTotalFees(blocks: any[]): string {
+    return blocks.reduce((sum, block) => sum + BigInt(block.total_fees), BigInt(0)).toString();
   }
 }
 
