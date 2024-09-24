@@ -36,7 +36,7 @@ describe('PerformanceMetricsService', () => {
       mockSnarkOSDBService.getTotalBlocksInTimeFrame.mockResolvedValue(100);
       mockSnarkOSDBService.getBlocksByValidator.mockResolvedValue(Array(80).fill({}));
 
-      const result = await performanceMetricsService['calculateUptime']('testAddress', 3600);
+      const result = await performanceMetricsService['calculateUptime']('testAddress');
       expect(result).toBe(80);
     });
   });

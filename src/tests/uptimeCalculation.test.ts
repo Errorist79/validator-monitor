@@ -36,13 +36,13 @@ describe('Uptime Calculation', () => {
   });
 
   it('should calculate uptime for last 1 hour correctly', async () => {
-    const uptimeLast1Hour = await performanceMetricsService.calculateUptime(testValidatorAddress, 3600);
+    const uptimeLast1Hour = await performanceMetricsService.calculateUptime(testValidatorAddress);
     expect(uptimeLast1Hour).toBeGreaterThan(0);
     expect(uptimeLast1Hour).toBeLessThanOrEqual(100);
   });
 
   it('should calculate uptime for last 24 hours correctly', async () => {
-    const uptimeLast24Hours = await performanceMetricsService.calculateUptime(testValidatorAddress, 86400);
+    const uptimeLast24Hours = await performanceMetricsService.calculateUptime(testValidatorAddress);
     expect(uptimeLast24Hours).toBeGreaterThan(0);
     expect(uptimeLast24Hours).toBeLessThanOrEqual(100);
   });
@@ -71,7 +71,25 @@ async function addTestData(snarkOSDBService: SnarkOSDBService) {
       transactions: [],
       validator_address: i % 5 === 0 ? validatorAddress : `other_validator_${i % 4}`,
       total_fees: BigInt(1000),
-      transactions_count: 0
+      transactions_count: 0,
+      header: {
+        metadata: {
+          height: '',
+          timestamp: '',
+          round: ''
+        }
+      },
+      authority: {
+        type: '',
+        subdag: undefined
+      },
+      block_hash: '',
+      ratifications: [],
+      solutions: {
+        version: 0
+      },
+      aborted_solution_ids: [],
+      aborted_transaction_ids: []
     };
     await snarkOSDBService.insertBlock(block);
 

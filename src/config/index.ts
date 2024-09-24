@@ -18,8 +18,9 @@ const config = {
         expiresIn: '1d',
     },
     uptime: {
-        calculationBlockRange: parseInt(process.env.UPTIME_CALCULATION_BLOCK_RANGE || '100', 10),
-        // Diğer ayarlar...
+        calculationMethod: process.env.UPTIME_CALCULATION_METHOD || 'block_range',
+        blockRange: parseInt(process.env.UPTIME_BLOCK_RANGE || '100', 10),
+        timeFrame: parseInt(process.env.UPTIME_TIME_FRAME || '3600', 10),
     },
     redis: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',

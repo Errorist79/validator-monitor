@@ -15,32 +15,38 @@ export class BlockService {
       const latestNetworkBlock = await this.getLatestBlock();
       
       console.log("Latest synchronized block:", latestSyncedBlock);
-      console.log("Latest block in the network:", latestNetworkBlock);
+      console.log("Latest block in the network:", latestNetworkBlock?.height);
       
-      // ... existing synchronization logic ...
+      if (latestNetworkBlock && latestSyncedBlock < latestNetworkBlock.height) {
+        const startHeight = latestSyncedBlock + 1;
+        const endHeight = Math.min(startHeight + batchSize - 1, latestNetworkBlock.height);
+        
+        const blocks = await this.fetchBlockRange(startHeight, endHeight);
+        
+        for (const block of blocks) {
+          await this.processNewBlock(block);
+        }
+        
+        console.log(`Synchronized blocks from ${startHeight} to ${endHeight}`);
+      } else {
+        console.log("No new blocks to synchronize");
+      }
     } catch (error) {
       console.error('Error occurred during block synchronization:', error);
     }
   }
 
   private async fetchBlockRange(startHeight: number, endHeight: number): Promise<Block[]> {
-    const blocks: Block[] = [];
-    for (let height = startHeight; height <= endHeight; height++) {
-      try {
-        const block = await this.aleoSDKService.getBlockByHeight(height);
-        if (block) {
-          blocks.push(block);
-        } else {
-          logger.warn(`Block not retrieved: ${height}`);
-        }
-      } catch (error) {
-        logger.error(`Error occurred while fetching block at height ${height}:`, error);
-      }
+    try {
+      const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
+      return blocks;
+    } catch (error) {
+      logger.error(`Blok aralığı ${startHeight}-${endHeight} alınırken hata oluştu:`, error);
+      return [];
     }
-    return blocks;
   }
 
-  async getLatestBlock() {
+  async getLatestBlock(): Promise<Block | null> {
     try {
       const latestHeight = await this.aleoSDKService.getLatestBlockHeight();
       if (latestHeight === null) {
@@ -53,8 +59,39 @@ export class BlockService {
     }
   }
 
-  public async getBlockByHeight(height: number) {
+  public async getBlockByHeight(height: number): Promise<Block | null> {
     return this.aleoSDKService.getBlockByHeight(height);
+  }
+
+  async processNewBlock(blockData: Block): Promise<void> {
+    try {
+      logger.debug(`Processing new block at height: ${blockData.height}`);
+      logger.debug(`Full block data: ${JSON.stringify(blockData, null, 2)}`);
+      
+      // Blok verisini veritabanına kaydet
+      await this.snarkOSDBService.insertBlock(blockData);
+
+      // Komite katılım verilerini işle
+      if (blockData.authority && blockData.authority.subdag && blockData.authority.subdag.subdag) {
+        logger.debug(`Block has committee data. Authority structure: ${JSON.stringify(blockData.authority, null, 2)}`);
+        await this.snarkOSDBService.parseCommitteeParticipation(blockData);
+      } else {
+        logger.warn(`Block ${blockData.height} does not have expected committee data structure`);
+      }
+
+      // Validator istatistiklerini güncelle
+      if (blockData.validator_address) {
+        await this.snarkOSDBService.updateValidatorBlockProduction(
+          blockData.validator_address,
+          typeof blockData.total_fees === 'string' ? BigInt(blockData.total_fees) : (blockData.total_fees || BigInt(0))
+        );
+      }
+
+      logger.info(`Successfully processed block at height: ${blockData.height}`);
+    } catch (error) {
+      logger.error('Error in processNewBlock:', error);
+      throw error;
+    }
   }
 }
 

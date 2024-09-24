@@ -19,11 +19,18 @@ export class SnarkOSDBService {
       connectionString: config.database.url,
     });
 
+    this.setupPoolErrorHandling();
+    this.initializePoolConnection();
+  }
+
+  private setupPoolErrorHandling(): void {
     this.pool.on('error', (err) => {
       logger.error('Unexpected error on idle client', err);
       process.exit(-1);
     });
+  }
 
+  private initializePoolConnection(): void {
     this.pool.connect((err, client, done) => {
       if (err) {
         logger.error('Error connecting to the database', err);
@@ -37,42 +44,21 @@ export class SnarkOSDBService {
   async checkDatabaseStructure(): Promise<boolean> {
     const client = await this.pool.connect();
     try {
-      const tables = ['validators', 'blocks', 'committee_entries', 'delegations', 'rewards'];
+      const tables = ['validators', 'blocks', 'delegations', 'rewards', 'committee_participation'];
       const indexes = [
         'idx_blocks_validator_address',
         'idx_blocks_timestamp',
-        'idx_committee_entries_validator',
         'idx_delegations_validator',
-        'idx_rewards_validator'
+        'idx_rewards_validator',
+        'idx_committee_participation_timestamp',
+        'idx_committee_participation_validator',
+        'idx_committee_participation_round'
       ];
 
-      for (const table of tables) {
-        const result = await client.query(`
-          SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' AND table_name = $1
-          )
-        `, [table]);
-        if (!result.rows[0].exists) {
-          logger.info(`Table ${table} does not exist`);
-          return false;
-        }
-      }
+      const tablesExist = await this.checkTablesExist(client, tables);
+      const indexesExist = await this.checkIndexesExist(client, indexes);
 
-      for (const index of indexes) {
-        const result = await client.query(`
-          SELECT EXISTS (
-            SELECT FROM pg_indexes
-            WHERE schemaname = 'public' AND indexname = $1
-          )
-        `, [index]);
-        if (!result.rows[0].exists) {
-          logger.info(`Index ${index} does not exist`);
-          return false;
-        }
-      }
-
-      return true;
+      return tablesExist && indexesExist;
     } catch (error) {
       logger.error("Error checking database structure:", error);
       return false;
@@ -81,60 +67,115 @@ export class SnarkOSDBService {
     }
   }
 
+  private async checkTablesExist(client: pkg.PoolClient, tables: string[]): Promise<boolean> {
+    for (const table of tables) {
+      const result = await client.query(`
+        SELECT EXISTS (
+          SELECT FROM information_schema.tables 
+          WHERE table_schema = 'public' AND table_name = $1
+        )
+      `, [table]);
+      if (!result.rows[0].exists) {
+        logger.info(`Table ${table} does not exist`);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private async checkIndexesExist(client: pkg.PoolClient, indexes: string[]): Promise<boolean> {
+    for (const index of indexes) {
+      const result = await client.query(`
+        SELECT EXISTS (
+          SELECT FROM pg_indexes
+          WHERE schemaname = 'public' AND indexname = $1
+        )
+      `, [index]);
+      if (!result.rows[0].exists) {
+        logger.info(`Index ${index} does not exist`);
+        return false;
+      }
+    }
+    return true;
+  }
+
   async initializeDatabase(): Promise<void> {
     try {
-      await this.pool.query(`
-        CREATE TABLE IF NOT EXISTS validators (
-          address TEXT PRIMARY KEY,
-          stake BIGINT,
-          is_active BOOLEAN,
-          bonded BIGINT,
-          last_seen TIMESTAMP,
-          uptime FLOAT,
-          total_blocks_produced INTEGER,
-          total_rewards BIGINT,
-          commission_rate FLOAT,
-          last_uptime_update TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS blocks (
-          height INTEGER PRIMARY KEY,
-          hash TEXT UNIQUE,
-          previous_hash TEXT,
-          timestamp TIMESTAMP,
-          validator_address TEXT,
-          total_fees BIGINT
-        );
-
-        CREATE TABLE IF NOT EXISTS committee_entries (
-          id SERIAL PRIMARY KEY,
-          validator_address TEXT,
-          start_height BIGINT NOT NULL,
-          end_height BIGINT,
-          created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS delegations (
-          id SERIAL PRIMARY KEY,
-          delegator_address TEXT,
-          validator_address TEXT,
-          amount BIGINT,
-          timestamp TIMESTAMP
-        );
-
-        CREATE TABLE IF NOT EXISTS rewards (
-          id SERIAL PRIMARY KEY,
-          validator_address TEXT,
-          amount BIGINT,
-          block_height INTEGER,
-          timestamp TIMESTAMP
-        );
-      `);
-      logger.info("Database tables created successfully");
+      await this.createTables();
+      await this.createIndexes();
+      logger.info("Database tables and indexes created successfully");
     } catch (error) {
       logger.error("Database initialization error:", error);
       throw error;
     }
+  }
+
+  private async createTables(): Promise<void> {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS validators (
+        address TEXT PRIMARY KEY,
+        stake BIGINT,
+        is_active BOOLEAN,
+        bonded BIGINT,
+        last_seen TIMESTAMP,
+        uptime FLOAT,
+        total_blocks_produced INTEGER,
+        total_rewards BIGINT,
+        commission_rate FLOAT,
+        last_uptime_update TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS blocks (
+        height INTEGER PRIMARY KEY,
+        hash TEXT UNIQUE,
+        previous_hash TEXT,
+        timestamp TIMESTAMP,
+        validator_address TEXT,
+        total_fees BIGINT,
+        transactions_count INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS delegations (
+        id SERIAL PRIMARY KEY,
+        delegator_address TEXT,
+        validator_address TEXT,
+        amount BIGINT,
+        timestamp TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS rewards (
+        id SERIAL PRIMARY KEY,
+        validator_address TEXT,
+        amount BIGINT,
+        block_height INTEGER,
+        timestamp TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS committee_participation (
+        id SERIAL PRIMARY KEY,
+        committee_id TEXT NOT NULL,
+        validator_address TEXT NOT NULL,
+        round_number BIGINT NOT NULL,
+        start_height BIGINT NOT NULL,
+        end_height BIGINT,
+        timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        UNIQUE(validator_address, round_number)
+      );
+    `);
+  }
+
+  private async createIndexes(): Promise<void> {
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_blocks_validator_address ON blocks(validator_address);
+      CREATE INDEX IF NOT EXISTS idx_blocks_timestamp ON blocks(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_delegations_validator ON delegations(validator_address);
+      CREATE INDEX IF NOT EXISTS idx_rewards_validator ON rewards(validator_address);
+      CREATE INDEX IF NOT EXISTS idx_committee_participation_validator ON committee_participation(validator_address);
+      CREATE INDEX IF NOT EXISTS idx_committee_participation_round ON committee_participation(round_number);
+      CREATE INDEX IF NOT EXISTS idx_committee_participation_timestamp ON committee_participation(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_committee_participation_start_height ON committee_participation(start_height);
+      CREATE INDEX IF NOT EXISTS idx_committee_participation_end_height ON committee_participation(end_height);
+    `);
   }
 
   async checkAndUpdateSchema(): Promise<void> {
@@ -142,7 +183,7 @@ export class SnarkOSDBService {
     try {
       await client.query('BEGIN');
 
-      const tables = ['validators', 'blocks', 'committee_entries', 'delegations', 'rewards'];
+      const tables = ['validators', 'blocks', 'delegations', 'rewards', 'committee_participation'];
       for (const table of tables) {
         await this.checkAndUpdateTable(client, table);
       }
@@ -200,13 +241,6 @@ export class SnarkOSDBService {
         total_fees: 'BIGINT',
         transactions_count: 'INTEGER'
       },
-      committee_entries: {
-        id: 'SERIAL PRIMARY KEY',
-        validator_address: 'TEXT',
-        start_height: 'BIGINT NOT NULL',
-        end_height: 'BIGINT',
-        created_at: 'TIMESTAMP DEFAULT NOW()'
-      },
       delegations: {
         id: 'SERIAL PRIMARY KEY',
         delegator_address: 'TEXT',
@@ -220,6 +254,11 @@ export class SnarkOSDBService {
         amount: 'BIGINT',
         block_height: 'INTEGER',
         timestamp: 'TIMESTAMP'
+      },
+      committee_participation: {
+        validator_address: 'TEXT NOT NULL',
+        round_number: 'BIGINT NOT NULL',
+        timestamp: 'TIMESTAMP WITH TIME ZONE DEFAULT NOW()'
       }
     };
 
@@ -436,24 +475,6 @@ export class SnarkOSDBService {
     }
   }
 
-  async getValidatorUptime(validatorAddress: string): Promise<number> {
-    try {
-      const result = await this.pool.query(`
-        SELECT 
-          COUNT(*) as total_blocks,
-          COUNT(CASE WHEN validator_address = $1 THEN 1 END) as produced_blocks
-        FROM blocks
-        WHERE timestamp > NOW() - INTERVAL '24 hours'
-      `, [validatorAddress]);
-
-      const { total_blocks, produced_blocks } = result.rows[0];
-      return (produced_blocks / total_blocks) * 100;
-    } catch (error) {
-      logger.error(`Error calculating uptime for validator ${validatorAddress}:`, error);
-      throw error;
-    }
-  }
-
   async getValidatorRewards(validatorAddress: string, timeFrame: number): Promise<string> {
     try {
       const result = await this.pool.query(`
@@ -510,20 +531,16 @@ export class SnarkOSDBService {
     }
   }
 
-  async getCommitteeEntriesForValidator(validatorAddress: string, timeFrame: number): Promise<any[]> {
-    try {
-      const result = await this.pool.query(`
-        SELECT start_height, end_height
-        FROM committee_entries
-        WHERE validator_address = $1
-        AND start_height >= (SELECT MAX(height) - $2 FROM blocks)
-        ORDER BY start_height DESC
-      `, [validatorAddress, timeFrame]);
-      return result.rows;
-    } catch (error) {
-      logger.error(`Error getting committee entries for validator ${validatorAddress}:`, error);
-      throw error;
-    }
+  public async getCommitteeEntries(validatorAddress: string, startHeight: number, endHeight: number): Promise<any[]> {
+    const query = `
+      SELECT *
+      FROM committee_participation
+      WHERE validator_address = $1
+        AND (start_height <= $2) AND (end_height IS NULL OR end_height >= $3)
+    `;
+    const values = [validatorAddress, endHeight, startHeight];
+    const result = await this.pool.query(query, values);
+    return result.rows;
   }
 
   async getBlockCountBetween(startHeight: number, endHeight: number): Promise<number> {
@@ -583,18 +600,6 @@ export class SnarkOSDBService {
       console.error("Error inserting or updating validator:", error);
       throw error;
     }
-  }
-
-  public async getCommitteeEntries(validatorAddress: string, startHeight: number, endHeight: number): Promise<CommitteeEntry[]> {
-    const query = `
-      SELECT *
-      FROM committee_entries
-      WHERE validator_address = $1
-        AND (start_height <= $2) AND (end_height IS NULL OR end_height >= $3)
-    `;
-    const values = [validatorAddress, endHeight, startHeight];
-    const result = await this.pool.query(query, values);
-    return result.rows;
   }
 
   public async getBlockCountInHeightRange(startHeight: number, endHeight: number): Promise<number> {
@@ -708,6 +713,147 @@ export class SnarkOSDBService {
       client.release();
     }
   }
-}
 
-export default SnarkOSDBService;
+  /** Parse committee participation from block data */
+  async parseCommitteeParticipation(block: Block): Promise<void> {
+    try {
+      logger.debug(`Parsing committee participation for block ${block.header.metadata.height}`);
+      logger.debug(`Block authority data: ${JSON.stringify(block.authority)}`);
+      if (block.authority?.type === 'quorum' && block.authority.subdag?.subdag) {
+        logger.debug(`Block ${block.header.metadata.height} has subdag data: ${JSON.stringify(block.authority.subdag.subdag, null, 2)}`);
+        for (const [roundNumber, batches] of Object.entries(block.authority.subdag.subdag)) {
+          logger.debug(`Processing round ${roundNumber} with ${batches.length} batches`);
+          for (const batch of batches) {
+            if ('batch_header' in batch) {
+              const committeeId = batch.batch_header.committee_id;
+              const validatorAddress = batch.batch_header.author;
+              const height = parseInt(block.header.metadata.height);
+              logger.debug(`Saving committee participation: committee=${committeeId}, validator=${validatorAddress}, round=${roundNumber}, height=${height}`);
+              try {
+                await this.saveCommitteeParticipation(committeeId, validatorAddress, BigInt(roundNumber), height);
+              } catch (error) {
+                logger.error(`Error saving committee participation: ${error}`);
+              }
+            } else {
+              logger.warn(`Batch in round ${roundNumber} does not have a batch_header`);
+            }
+          }
+        }
+      } else {
+        logger.warn(`No committee participation data found for block ${block.header.metadata.height}`);
+      }
+    } catch (error) {
+      logger.error('Error in parseCommitteeParticipation:', error);
+      throw error;
+    }
+  }
+
+  /** Save committee participation to database */
+  async saveCommitteeParticipation(committeeId: string, validatorAddress: string, roundNumber: bigint, height: number): Promise<void> {
+    try {
+      logger.debug(`Attempting to save committee participation: committee=${committeeId}, validator=${validatorAddress}, round=${roundNumber}, height=${height}`);
+      const result = await this.pool.query(`
+        INSERT INTO committee_participation 
+        (committee_id, validator_address, round_number, start_height) 
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (validator_address, round_number) 
+        DO UPDATE SET 
+          committee_id = EXCLUDED.committee_id,
+          start_height = LEAST(committee_participation.start_height, EXCLUDED.start_height),
+          end_height = GREATEST(committee_participation.end_height, $4),
+          timestamp = NOW()
+      `, [committeeId, validatorAddress, roundNumber.toString(), height]);
+      logger.debug(`Committee participation saved successfully. Result: ${JSON.stringify(result)}`);
+    } catch (error) {
+      logger.error('Error saving committee participation:', error);
+      throw error;
+    }
+  }
+
+  async getTotalRoundsInTimeframe(startDate: Date, endDate: Date): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(DISTINCT height) as total_rounds
+        FROM blocks
+        WHERE timestamp BETWEEN $1 AND $2
+      `, [startDate, endDate]);
+  
+      logger.debug(`Total rounds query result: ${JSON.stringify(result.rows[0])}`);
+      return parseInt(result.rows[0].total_rounds);
+    } catch (error) {
+      logger.error('Error getting total rounds:', error);
+      throw error;
+    }
+  }
+
+  async getValidatorParticipations(validatorAddress: string, startDate: Date, endDate: Date): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(*) as participations
+        FROM blocks
+        WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
+      `, [validatorAddress, startDate, endDate]);
+  
+      logger.debug(`Validator participations query result: ${JSON.stringify(result.rows[0])}`);
+      return parseInt(result.rows[0].participations);
+    } catch (error) {
+      logger.error(`Error getting validator participations for ${validatorAddress}:`, error);
+      throw error;
+    }
+  }
+
+  async getTotalRoundsInBlockRange(startHeight: number, endHeight: number): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(DISTINCT round_number) as total_rounds
+        FROM committee_participation
+        WHERE start_height <= $2 AND (end_height >= $1 OR end_height IS NULL)
+      `, [startHeight, endHeight]);
+
+      logger.debug(`Total rounds query result: ${JSON.stringify(result.rows[0])}`);
+      return parseInt(result.rows[0].total_rounds);
+    } catch (error) {
+      logger.error('Error getting total rounds:', error);
+      throw error;
+    }
+  }
+
+  async getValidatorParticipationsInBlockRange(validatorAddress: string, startHeight: number, endHeight: number): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT COUNT(*) as participations
+        FROM committee_participation
+        WHERE validator_address = $1 
+        AND start_height <= $3 
+        AND (end_height >= $2 OR end_height IS NULL)
+      `, [validatorAddress, startHeight, endHeight]);
+  
+      logger.debug(`Validator participations query result: ${JSON.stringify(result.rows[0])}`);
+      return parseInt(result.rows[0].participations);
+    } catch (error) {
+      logger.error(`Error getting validator participations for ${validatorAddress}:`, error);
+      throw error;
+    }
+  }
+
+  async getBlockHeightByTimestamp(timestamp: Date): Promise<number> {
+    try {
+      const result = await this.pool.query(`
+        SELECT height
+        FROM blocks
+        WHERE timestamp <= $1
+        ORDER BY timestamp DESC
+        LIMIT 1
+      `, [timestamp]);
+
+      if (result.rows.length === 0) {
+        throw new Error('No block found for the given timestamp');
+      }
+
+      return result.rows[0].height;
+    } catch (error) {
+      logger.error('Error getting block height by timestamp:', error);
+      throw error;
+    }
+  }
+}

@@ -84,6 +84,7 @@ export class ValidatorService {
 
   async updateValidatorUptime(validatorAddress: string): Promise<void> {
     try {
+      logger.debug(`Updating uptime for validator ${validatorAddress}`);
       const uptime = await this.performanceMetricsService.calculateUptime(validatorAddress);
       const lastUptimeUpdate = new Date();
       if (uptime !== null) {

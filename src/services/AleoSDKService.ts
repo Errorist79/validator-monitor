@@ -74,8 +74,23 @@ export class AleoSDKService {
       timestamp: apiBlock.header?.metadata?.timestamp ? new Date(Number(apiBlock.header.metadata.timestamp) * 1000).toISOString() : undefined,
       transactions: apiBlock.transactions || [],
       validator_address: apiBlock.authority?.subdag?.subdag?.[Object.keys(apiBlock.authority.subdag.subdag)[0]]?.[0]?.batch_header?.author,
-      total_fees: apiBlock.header?.metadata?.cumulative_weight ? apiBlock.header.metadata.cumulative_weight.toString() : undefined,
-      transactions_count: apiBlock.transactions?.length || 0
+      total_fees: apiBlock.header?.metadata?.cumulative_weight 
+        ? BigInt(apiBlock.header.metadata.cumulative_weight)
+        : undefined,
+      transactions_count: apiBlock.transactions?.length || 0,
+      header: {
+        metadata: {
+          height: apiBlock.header.metadata.height,
+          timestamp: apiBlock.header.metadata.timestamp,
+          round: apiBlock.header.metadata.round
+        }
+      },
+      authority: apiBlock.authority,
+      block_hash: apiBlock.block_hash,
+      ratifications: apiBlock.ratifications || [],
+      solutions: apiBlock.solutions || { version: 1 },
+      aborted_solution_ids: apiBlock.aborted_solution_ids || [],
+      aborted_transaction_ids: apiBlock.aborted_transaction_ids || []
     };
   }
 
@@ -246,6 +261,26 @@ export class AleoSDKService {
       throw error;
     }
   }
+  async getBlockRange(start: number, end: number): Promise<Block[]> {
+    try {
+      logger.debug(`Fetching block range from ${start} to ${end}...`);
+      const apiBlocks = await this.network.getBlockRange(start, end);
+      
+      if (!Array.isArray(apiBlocks)) {
+        logger.warn('Unexpected response format for block range');
+        return [];
+      }
+
+      const blocks: Block[] = apiBlocks.map(apiBlock => this.convertApiBlockToBlock(apiBlock));
+      
+      logger.debug(`Successfully fetched ${blocks.length} blocks`);
+      return blocks;
+    } catch (error) {
+      logger.error(`Error while fetching block range from ${start} to ${end}:`, error);
+      throw new Error(`Failed to get block range from ${start} to ${end}`);
+    }
+  }
+
 
   async getRawLatestBlock(): Promise<any> {
     try {

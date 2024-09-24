@@ -75,6 +75,10 @@ function startServer() {
 }
 
 async function main() {
+  logger.debug('Application starting...');
+  logger.info('This is an info log');
+  logger.warn('This is a warning log');
+  logger.error('This is an error log');
   try {
     logger.info('Initializing database...');
     await snarkOSDBService.initializeDatabase();
@@ -121,7 +125,7 @@ async function main() {
     }
 
     // Her 5 dakikada bir uptime hesaplaması
-    cron.schedule('*/5 * * * *', async () => {
+    cron.schedule('* * * * *', async () => {
       try {
         const validators = await snarkOSDBService.getValidators();
         for (const validator of validators) {
@@ -154,7 +158,7 @@ async function main() {
 }
 
 main().catch(error => {
-  logger.error('An unexpected error occurred:', error);
+  logger.error('Unhandled error in main:', error);
   process.exit(1);
 });
 

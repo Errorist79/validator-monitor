@@ -26,7 +26,7 @@ export class PerformanceMetricsService {
 
       const blocksProposed = blocks.length;
       const transactionsProcessed = transactions.length;
-      const uptime = await this.calculateUptime(validatorAddress, config.uptime.calculationBlockRange); // .env'den alınan süre
+      const uptime = await this.calculateUptime(validatorAddress);
       const averageResponseTime = await this.calculateAverageResponseTime(validatorAddress, timeFrame);
 
       return {
@@ -41,36 +41,40 @@ export class PerformanceMetricsService {
     }
   }
 
-  public async calculateUptime(validatorAddress: string, blockRange: number = config.uptime.calculationBlockRange): Promise<number | null> {
+  public async calculateUptime(validatorAddress: string, customTimeFrame?: number): Promise<number | null> {
     try {
-      const latestBlockHeight = await this.snarkOSDBService.getLatestBlockHeight();
-      const startHeight = latestBlockHeight - blockRange + 1;
-      const endHeight = latestBlockHeight;
+      let startHeight: number;
+      let endHeight: number;
 
-      const committeeEntries = await this.snarkOSDBService.getCommitteeEntries(validatorAddress, startHeight, endHeight);
-      const totalBlocks = await this.snarkOSDBService.getBlockCountInHeightRange(startHeight, endHeight);
-      const validatorBlocks = await this.snarkOSDBService.getValidatorBlockCountInHeightRange(validatorAddress, startHeight, endHeight);
+      if (customTimeFrame) {
+        const endDate = new Date();
+        const startDate = new Date(endDate.getTime() - customTimeFrame * 1000);
+        [startHeight, endHeight] = await Promise.all([
+          this.snarkOSDBService.getBlockHeightByTimestamp(startDate),
+          this.snarkOSDBService.getBlockHeightByTimestamp(endDate)
+        ]);
+      } else {
+        endHeight = await this.snarkOSDBService.getLatestBlockHeight();
+        startHeight = Math.max(1, endHeight - config.uptime.blockRange + 1);
+      }
 
-      if (totalBlocks === 0 || committeeEntries.length === 0) {
-        logger.info(`Not enough data to calculate uptime for validator ${validatorAddress}`);
+      logger.debug(`Calculating uptime for validator ${validatorAddress} from block ${startHeight} to ${endHeight}`);
+
+      const totalRounds = await this.snarkOSDBService.getTotalRoundsInBlockRange(startHeight, endHeight);
+      logger.debug(`Total rounds in block range: ${totalRounds}`);
+
+      if (totalRounds === 0) {
+        logger.warn(`No rounds found in the block range for validator ${validatorAddress}`);
         return null;
       }
 
-      let expectedBlocks = 0;
-      for (const entry of committeeEntries) {
-        const entryStart = Math.max(startHeight, entry.start_height);
-        const entryEnd = entry.end_height ? Math.min(endHeight, entry.end_height) : endHeight;
-        const entryBlockCount = entryEnd - entryStart + 1;
-        expectedBlocks += entryBlockCount;
-      }
+      const validatorParticipations = await this.snarkOSDBService.getValidatorParticipationsInBlockRange(validatorAddress, startHeight, endHeight);
+      logger.debug(`Validator participations: ${validatorParticipations}`);
 
-      if (expectedBlocks === 0) {
-        logger.info(`No expected blocks for validator ${validatorAddress}`);
-        return null;
-      }
+      const uptime = (validatorParticipations / totalRounds) * 100;
+      logger.info(`Calculated uptime for validator ${validatorAddress}: ${uptime}%`);
+      return Number(uptime.toFixed(2));
 
-      const uptime = (validatorBlocks / expectedBlocks) * 100;
-      return Math.min(100, Math.max(0, uptime));
     } catch (error) {
       logger.error(`Error calculating uptime for validator ${validatorAddress}:`, error);
       throw error;
