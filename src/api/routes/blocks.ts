@@ -1,36 +1,28 @@
 import express from 'express';
 import { BlockService } from '../../services/BlockService.js';
+import { BlockSyncService } from '../../services/BlockSyncService.js';
+import logger from '../../utils/logger.js';
+import { NotFoundError, ValidationError } from '../../utils/errors.js';
 
 const router = express.Router();
 
-export default (blockService: BlockService) => {
+export default (blockSyncService: BlockSyncService) => {
   router.get('/latest', async (req, res) => {
     try {
-      const latestBlock = await blockService.getLatestBlock();
-      res.json(latestBlock);
-    } catch (error) {
-      if (error instanceof Error) {
-        res.status(500).json({ error: error.message });
+      const latestBlock = await blockSyncService.getLatestSyncedBlockHeight();
+      if (latestBlock) {
+        res.json(latestBlock);
       } else {
-        res.status(500).json({ error: 'Bilinmeyen bir hata oluştu' });
-      }
-    }
-  });
-
-  router.get('/:height', async (req, res) => {
-    try {
-      const { height } = req.params;
-      const block = await blockService.getBlockByHeight(parseInt(height));
-      if (!block) {
-        res.status(404).json({ error: 'Blok bulunamadı' });
-      } else {
-        res.json(block);
+        res.status(404).json({ error: 'Latest block not found' });
       }
     } catch (error) {
-      if (error instanceof Error) {
-        res.status(500).json({ error: error.message });
+      logger.error('Error fetching latest block:', error);
+      if (error instanceof ValidationError) {
+        res.status(400).json({ error: error.message });
+      } else if (error instanceof NotFoundError) {
+        res.status(404).json({ error: error.message });
       } else {
-        res.status(500).json({ error: 'Bilinmeyen bir hata oluştu' });
+        res.status(500).json({ error: 'An unexpected error occurred while fetching the latest block' });
       }
     }
   });

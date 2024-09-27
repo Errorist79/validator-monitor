@@ -1,8 +1,8 @@
-import { PerformanceMetricsService } from '../services/PerformanceMetricsService';
-import { SnarkOSDBService } from '../services/SnarkOSDBService';
-import { AleoSDKService } from '../services/AleoSDKService';
-import { config } from '../config/index';
-import { Block } from '../types/Block';
+import { PerformanceMetricsService } from '../services/PerformanceMetricsService.js';
+import { SnarkOSDBService } from '../services/SnarkOSDBService.js';
+import { AleoSDKService } from '../services/AleoSDKService.js';
+import { config } from '../config/index.js';
+import { Block, BlockAttributes } from '../database/models/Block.js';
 
 // Jest'in global fonksiyonlarını tanımlayalım
 declare const describe: jest.Describe;
@@ -63,17 +63,17 @@ async function addTestData(snarkOSDBService: SnarkOSDBService) {
   for (let i = 0; i < totalBlocks; i++) {
     const height = startHeight + i;
     const timestamp = new Date().toISOString(); // Basitlik için aynı zaman damgası
-    const block: Block = {
+    const block: BlockAttributes = {
       height: height,
       hash: `block_hash_${i}`,
       previous_hash: `block_hash_${i - 1}`,
-      timestamp: timestamp,
-      transactions: [],
+      round: height, // round değerini ekleyin (örneğin, height ile aynı olabilir)
+      timestamp: new Date(timestamp).getTime(),
       validator_address: i % 5 === 0 ? validatorAddress : `other_validator_${i % 4}`,
       total_fees: BigInt(1000),
       transactions_count: 0
     };
-    await snarkOSDBService.insertBlock(block);
+    await snarkOSDBService.upsertBlocks([block]);
 
     // Her 50 blokta bir committee entry ekle
     if (i % 50 === 0) {

@@ -133,3 +133,5 @@ yarn.lock
 
 # Local Netlify folder
 .netlify
+example-block.json
+one-block.json

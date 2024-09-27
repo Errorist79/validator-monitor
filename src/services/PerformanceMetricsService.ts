@@ -3,6 +3,8 @@ import { SnarkOSDBService } from './SnarkOSDBService.js';
 import { AleoSDKService } from './AleoSDKService.js';
 import logger from '../utils/logger.js';
 import { config } from '../config/index.js';
+import { CommitteeParticipation } from '../database/models/CommitteeParticipation.js';
+import { Batch } from '../database/models/Batch.js';
 
 export class PerformanceMetricsService {
   private cacheService: CacheService;
@@ -41,35 +43,47 @@ export class PerformanceMetricsService {
     }
   }
 
-  public async calculateUptime(validatorAddress: string, blockRange: number = config.uptime.calculationBlockRange): Promise<number | null> {
+  public async calculateUptime(validatorAddress: string, timeFrame: number = config.uptime.calculationTimeFrame): Promise<number | null> {
     try {
-      const latestBlockHeight = await this.snarkOSDBService.getLatestBlockHeight();
-      const startHeight = latestBlockHeight - blockRange + 1;
-      const endHeight = latestBlockHeight;
+      const endTimestamp = Math.floor(Date.now() / 1000);
+      const startTimestamp = endTimestamp - timeFrame;
 
-      const committeeEntries = await this.snarkOSDBService.getCommitteeEntries(validatorAddress, startHeight, endHeight);
-      const totalBlocks = await this.snarkOSDBService.getBlockCountInHeightRange(startHeight, endHeight);
-      const validatorBlocks = await this.snarkOSDBService.getValidatorBlockCountInHeightRange(validatorAddress, startHeight, endHeight);
+      const committeeEntries: CommitteeParticipation[] = await this.snarkOSDBService.getCommitteeEntriesForValidator(validatorAddress, startTimestamp, endTimestamp);
+      const validatorBatches: Batch[] = await this.snarkOSDBService.getValidatorBatches(validatorAddress, startTimestamp, endTimestamp);
 
-      if (totalBlocks === 0 || committeeEntries.length === 0) {
-        logger.info(`Not enough data to calculate uptime for validator ${validatorAddress}`);
+      if (committeeEntries.length === 0) {
+        logger.info(`Validator ${validatorAddress} was not in any committee during the specified time frame.`);
         return null;
       }
 
-      let expectedBlocks = 0;
-      for (const entry of committeeEntries) {
-        const entryStart = Math.max(startHeight, entry.start_height);
-        const entryEnd = entry.end_height ? Math.min(endHeight, entry.end_height) : endHeight;
-        const entryBlockCount = entryEnd - entryStart + 1;
-        expectedBlocks += entryBlockCount;
+      let totalExpectedBatches = 0;
+      let actualBatches = 0;
+
+      for (let i = 0; i < committeeEntries.length; i++) {
+        const entry = committeeEntries[i];
+        const entryStart = entry.timestamp;
+        const entryEnd = i < committeeEntries.length - 1 ? committeeEntries[i + 1].timestamp : endTimestamp;
+        const entryDuration = entryEnd - entryStart;
+        
+        // Komite büyüklüğünü hesaplamak için ek bir sorgu gerekebilir
+        const committeeSizeQuery = await this.snarkOSDBService.getCommitteeSizeForRound(entry.round);
+        const committeeSize = committeeSizeQuery.committee_size;
+
+        const expectedBatchesForEntry = Math.floor(entryDuration / config.uptime.averageBatchInterval) / committeeSize;
+        totalExpectedBatches += expectedBatchesForEntry;
+
+        const batchesInEntry = validatorBatches.filter(batch => 
+          batch.timestamp >= entryStart && batch.timestamp < entryEnd
+        ).length;
+        actualBatches += batchesInEntry;
       }
 
-      if (expectedBlocks === 0) {
-        logger.info(`No expected blocks for validator ${validatorAddress}`);
+      if (totalExpectedBatches === 0) {
+        logger.info(`No expected batches for validator ${validatorAddress}`);
         return null;
       }
 
-      const uptime = (validatorBlocks / expectedBlocks) * 100;
+      const uptime = (actualBatches / totalExpectedBatches) * 100;
       return Math.min(100, Math.max(0, uptime));
     } catch (error) {
       logger.error(`Error calculating uptime for validator ${validatorAddress}:`, error);

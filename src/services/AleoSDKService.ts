@@ -1,10 +1,11 @@
 import { AleoNetworkClient } from '@provablehq/sdk';
 import winston from 'winston';
 import axios from 'axios';
-import { Block, APIBlock } from '../types/Block.js';
+import { BlockAttributes, APIBlock } from '../types/Block.js';
 import { validateBlock } from '../utils/validation.js';
 import { AppError, ValidationError, NotFoundError } from '../utils/errors.js';
 import { metrics } from '../utils/metrics.js';
+import { getBigIntFromString } from '../utils/helpers.js';
 
 const logger = winston.createLogger({
   level: 'debug',
@@ -27,21 +28,21 @@ export class AleoSDKService {
     logger.info(`AleoSDKService initialized with ${networkType} at ${networkUrl}`);
   }
 
-  async getLatestBlock(): Promise<Block | null> {
+  async getLatestBlock(): Promise<BlockAttributes | null> {
     try {
       logger.debug('Fetching the latest block');
-      const latestBlock = await this.network.getLatestBlock();
-      
-      if (!latestBlock) {
+      const rawLatestBlock = await this.network.getLatestBlock();
+      if (!rawLatestBlock) {
         throw new NotFoundError('No block found');
       }
-
-      if (latestBlock instanceof Error) {
-        throw latestBlock;
+      if (rawLatestBlock instanceof Error) {
+        throw rawLatestBlock;
       }
-
-      const convertedBlock = this.convertApiBlockToBlock(latestBlock);
-      logger.debug('Converted latest block:', JSON.stringify(convertedBlock, null, 2));
+      const apiBlock = this.convertToAPIBlock(rawLatestBlock);
+      const convertedBlock = this.convertToBlockAttributes(apiBlock);
+      logger.debug('Converted latest block:', JSON.stringify(convertedBlock, (_, value) =>
+        typeof value === 'bigint' ? value.toString() : value
+      ));
       
       const { error } = validateBlock(convertedBlock);
       if (error) {
@@ -60,50 +61,37 @@ export class AleoSDKService {
     }
   }
 
-  private convertApiBlockToBlock(apiBlock: any): Block {
-    if (!apiBlock) {
-      throw new Error('Invalid block structure');
-    }
-    
-    logger.debug('API Block:', JSON.stringify(apiBlock, null, 2));
-    
+  public convertToBlockAttributes(apiBlock: APIBlock): BlockAttributes {
     return {
       height: parseInt(apiBlock.header.metadata.height),
       hash: apiBlock.block_hash,
       previous_hash: apiBlock.previous_hash,
-      timestamp: apiBlock.header?.metadata?.timestamp ? new Date(Number(apiBlock.header.metadata.timestamp) * 1000).toISOString() : undefined,
-      transactions: apiBlock.transactions || [],
-      validator_address: apiBlock.authority?.subdag?.subdag?.[Object.keys(apiBlock.authority.subdag.subdag)[0]]?.[0]?.batch_header?.author,
-      total_fees: apiBlock.header?.metadata?.cumulative_weight ? apiBlock.header.metadata.cumulative_weight.toString() : undefined,
-      transactions_count: apiBlock.transactions?.length || 0
+      round: parseInt(apiBlock.header.metadata.round),
+      timestamp: parseInt(apiBlock.header.metadata.timestamp),
+      transactions_count: apiBlock.transactions.length
     };
   }
 
-  async getLatestCommittee(): Promise<{
-    id: string;
-    starting_round: number;
-    members: Record<string, [number, boolean, number]>;
-    total_stake: number;
-  }> {
+  async getLatestCommittee(): Promise<{ starting_round: string; members: Record<string, [string, boolean, string]> }> {
     try {
-      const committeeInfo = await this.network.getLatestCommittee();
-      if (typeof committeeInfo === 'object' && committeeInfo !== null &&
-          'id' in committeeInfo &&
-          'starting_round' in committeeInfo &&
-          'members' in committeeInfo &&
-          'total_stake' in committeeInfo) {
-        return committeeInfo as {
-          id: string;
-          starting_round: number;
-          members: Record<string, [number, boolean, number]>;
-          total_stake: number;
-        };
-      } else {
-        throw new Error('Invalid committee info structure');
+      const response = await this.network.getLatestCommittee();
+      if (typeof response !== 'object' || response === null || !('starting_round' in response) || !('members' in response)) {
+        throw new Error('Invalid committee response structure');
       }
+      return response as { starting_round: string; members: Record<string, [string, boolean, string]> };
     } catch (error) {
       logger.error('Error fetching latest committee:', error);
       throw error;
+    }
+  }
+
+  async getValidatorStake(address: string): Promise<bigint | null> {
+    try {
+      const bondedInfo = await this.getBondedMapping(address);
+      return bondedInfo ? bondedInfo.microcredits : null;
+    } catch (error) {
+      logger.error(`Error fetching validator stake for ${address}:`, error);
+      return null;
     }
   }
 
@@ -133,7 +121,7 @@ export class AleoSDKService {
       const parsedResult = JSON.parse(result as string);
       return {
         validator: parsedResult.validator,
-        microcredits: BigInt(parsedResult.microcredits.replace('u64', ''))
+        microcredits: getBigIntFromString(parsedResult.microcredits.replace('u64', ''))
       };
     } catch (error) {
       logger.error(`Error fetching bonded mapping for ${address}:`, error);
@@ -147,7 +135,7 @@ export class AleoSDKService {
       if (!result) {
         return BigInt(0);
       }
-      return BigInt((result as string).replace('u64', ''));
+      return getBigIntFromString((result as string).replace('u64', ''));
     } catch (error) {
       logger.error(`Error fetching delegated mapping for ${address}:`, error);
       throw error;
@@ -218,16 +206,18 @@ export class AleoSDKService {
     }
   }
 
-  async getBlockByHeight(height: number): Promise<Block | null> {
+  async getBlockByHeight(height: number): Promise<APIBlock | null> {
     try {
-      const apiBlock = await this.network.getBlock(height);
-      if (apiBlock instanceof Error) {
-        logger.error(`Error fetching block at height ${height}:`, apiBlock);
+      const rawBlock = await this.network.getBlock(height);
+      if (!rawBlock) {
         return null;
       }
-      return this.convertApiBlockToBlock(apiBlock);
+      if (rawBlock instanceof Error) {
+        throw rawBlock;
+      }
+      return this.convertToAPIBlock(rawBlock);
     } catch (error) {
-      logger.error(`Error while fetching block at height ${height}:`, error);
+      logger.error(`Error fetching block at height ${height}:`, error);
       return null;
     }
   }
@@ -267,6 +257,52 @@ export class AleoSDKService {
       });
     } else {
       logger.error('Unknown error', { error: error.message });
+    }
+  }
+
+  private convertToAPIBlock(rawBlock: any): APIBlock {
+    return {
+      block_hash: rawBlock.block_hash,
+      previous_hash: rawBlock.previous_hash,
+      header: {
+        previous_state_root: rawBlock.header.previous_state_root,
+        transactions_root: rawBlock.header.transactions_root,
+        finalize_root: rawBlock.header.finalize_root,
+        ratifications_root: rawBlock.header.ratifications_root,
+        solutions_root: rawBlock.header.solutions_root,
+        subdag_root: rawBlock.header.subdag_root,
+        metadata: {
+          network: rawBlock.header.metadata.network,
+          round: rawBlock.header.metadata.round,
+          height: rawBlock.header.metadata.height,
+          cumulative_weight: rawBlock.header.metadata.cumulative_weight,
+          cumulative_proof_target: rawBlock.header.metadata.cumulative_proof_target,
+          coinbase_target: rawBlock.header.metadata.coinbase_target,
+          proof_target: rawBlock.header.metadata.proof_target,
+          last_coinbase_target: rawBlock.header.metadata.last_coinbase_target,
+          last_coinbase_timestamp: rawBlock.header.metadata.last_coinbase_timestamp,
+          timestamp: rawBlock.header.metadata.timestamp
+        }
+      },
+      authority: rawBlock.authority,
+      ratifications: rawBlock.ratifications,
+      solutions: rawBlock.solutions,
+      transactions: rawBlock.transactions,
+      aborted_transaction_ids: rawBlock.aborted_transaction_ids
+    };
+  }
+
+  async getBlockRange(startHeight: number, endHeight: number): Promise<APIBlock[]> {
+    try {
+      logger.debug(`Fetching block range from ${startHeight} to ${endHeight}`);
+      const blocks = await this.network.getBlockRange(startHeight, endHeight);
+      if (blocks instanceof Error) {
+        throw blocks;
+      }
+      return blocks.map(this.convertToAPIBlock);
+    } catch (error) {
+      logger.error(`Error fetching block range from ${startHeight} to ${endHeight}:`, error);
+      throw new Error(`Failed to get block range from ${startHeight} to ${endHeight}`);
     }
   }
 }

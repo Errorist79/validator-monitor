@@ -1,5 +1,5 @@
 export class AppError extends Error {
-  constructor(public statusCode: number, message: string) {
+  constructor(message: string, public statusCode: number = 500) {
     super(message);
     this.name = this.constructor.name;
     Error.captureStackTrace(this, this.constructor);
@@ -8,12 +8,12 @@ export class AppError extends Error {
 
 export class NotFoundError extends AppError {
   constructor(message: string) {
-    super(404, message);
+    super(message, 404);
   }
 }
 
 export class ValidationError extends AppError {
   constructor(message: string) {
-    super(400, message);
+    super(message, 400);
   }
 }

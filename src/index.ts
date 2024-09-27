@@ -1,12 +1,10 @@
 import express from 'express';
-// import RestApiService from './services/RestApiService.js';
 import ValidatorService from './services/ValidatorService.js';
 import BlockService from './services/BlockService.js';
 import ConsensusService from './services/ConsensusService.js';
 import PrimaryService from './services/PrimaryService.js';
 import api from './api/index.js';
 import logger from './utils/logger.js';
-// import { authMiddleware } from './api/middleware/auth.js';
 import { SyncService } from './services/SyncService.js';
 import { apiLimiter } from './api/middleware/rateLimiter';
 import { PerformanceMetricsService } from './services/PerformanceMetricsService.js';
@@ -16,11 +14,10 @@ import { SnarkOSDBService } from './services/SnarkOSDBService.js';
 import { config } from './config/index.js';
 import AleoSDKService from './services/AleoSDKService.js';
 import { NotFoundError, ValidationError } from './utils/errors.js';
+import BlockSyncService from './services/BlockSyncService.js';
 
 const app = express();
 let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
-
-// Test the connection when the application starts
 
 logger.info(`Initializing AleoSDKService with URL: ${config.aleo.sdkUrl} and network type: ${config.aleo.networkType}`);
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
@@ -30,8 +27,9 @@ const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, 
 const blockService = new BlockService(aleoSDKService, snarkOSDBService);
 const consensusService = new ConsensusService(aleoSDKService);
 const primaryService = new PrimaryService(aleoSDKService);
-const syncService = new SyncService(aleoSDKService, snarkOSDBService);
+const syncService = new SyncService(aleoSDKService, snarkOSDBService, validatorService);
 const alertService = new AlertService(snarkOSDBService, performanceMetricsService);
+const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService);
 
 logger.info(`ConsensusService initialized with URL: ${config.aleo.sdkUrl}`);
 
@@ -88,40 +86,11 @@ async function main() {
     await tryConnect();
     startServer();
 
-    // Periodic validator update
-    setInterval(async () => {
-      try {
-        await validatorService.updateValidators();
-      } catch (error) {
-        logger.error('Error updating validators:', error);
-      }
-    }, 60 * 60 * 1000); // Every hour
-
-    // Perform the first validator update immediately
-    try {
-      await validatorService.updateValidators();
-    } catch (error) {
-      logger.error('Error performing initial validator update:', error);
-    }
-
-    // Periodic block synchronization
-    setInterval(async () => {
-      try {
-        await syncService.syncLatestBlocks(100);
-      } catch (error) {
-        logger.error('Block synchronization failed:', error);
-      }
-    }, 5 * 60 * 1000); // Every 5 minutes
-
-    // Perform the first block synchronization immediately
-    try {
-      await syncService.syncLatestBlocks(100);
-    } catch (error) {
-      logger.error('Error performing initial block synchronization:', error);
-    }
+    // Blok senkronizasyon sürecini başlat
+    await blockSyncService.startSyncProcess();
 
     // Her 5 dakikada bir uptime hesaplaması
-    cron.schedule('*/5 * * * *', async () => {
+    cron.schedule('*/2 * * * *', async () => {
       try {
         const validators = await snarkOSDBService.getValidators();
         for (const validator of validators) {
@@ -133,13 +102,21 @@ async function main() {
       }
     });
 
-    // Her saat başı validator bilgilerini güncelle
-    cron.schedule('0 * * * *', async () => {
-      try {
-        await validatorService.updateValidators();
-        logger.info('Validator information updated');
-      } catch (error) {
-        logger.error('Error updating validator information:', error);
+      // Her saat başı validator statülerini güncelle
+  cron.schedule('0 * * * *', async () => {
+    try {
+      await validatorService.updateValidatorStatuses();
+    } catch (error) {
+      logger.error('Validator status update failed:', error);
+    }
+  });
+
+  // Her 15 dakikada bir uptime hesaplamalarını güncelle
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      await validatorService.updateAllValidatorsUptime();
+    } catch (error) {
+      logger.error('Uptime update failed:', error);
       }
     });
 
@@ -158,7 +135,7 @@ main().catch(error => {
   process.exit(1);
 });
 
-app.use('/api', api(validatorService, blockService, performanceMetricsService, alertService));
+app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService));
 
 app.get('/api/validators', async (req, res) => {
   try {
@@ -310,5 +287,3 @@ app.get('/api/alerts/:address', async (req, res) => {
     res.status(500).json({ error: 'Failed to check alerts' });
   }
 });
-
-type CommitteeMember = [number, boolean, number];

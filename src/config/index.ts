@@ -19,10 +19,15 @@ const config = {
     },
     uptime: {
         calculationBlockRange: parseInt(process.env.UPTIME_CALCULATION_BLOCK_RANGE || '100', 10),
+        calculationTimeFrame: 86400, // 24 saat
+        averageBatchInterval: 5, // saniye cinsinden ortalama batch aralığı
         // Diğer ayarlar...
     },
     redis: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',
+    },
+    sync: {
+        startBlock: parseInt(process.env.SYNC_START_BLOCK || '0', 10),
     },
 };
 export { config };

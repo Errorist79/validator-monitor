@@ -1,9 +1,11 @@
-import { PerformanceMetricsService } from '@/services/PerformanceMetricsService';
-import { SnarkOSDBService } from '@/services/SnarkOSDBService';
-import { AleoSDKService } from '@/services/AleoSDKService';
+import { PerformanceMetricsService } from '../../services/PerformanceMetricsService';
+import { SnarkOSDBService } from '../../services/SnarkOSDBService';
+import { AleoSDKService } from '../../services/AleoSDKService';
+import { CommitteeParticipation } from '../../database/models/CommitteeParticipation.js';
+import { Batch } from '../../database/models/Batch.js';
 
-jest.mock('@/services/SnarkOSDBService');
-jest.mock('@/services/AleoSDKService');
+jest.mock('../../services/SnarkOSDBService');
+jest.mock('../../services/AleoSDKService');
 
 describe('PerformanceMetricsService', () => {
   let performanceMetricsService: PerformanceMetricsService;
@@ -16,49 +18,32 @@ describe('PerformanceMetricsService', () => {
     performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService);
   });
 
-  test('calculateValidatorPerformance should return performance metrics', async () => {
-    const mockBlocks = [{ height: 1, transactions_count: 5, total_fees: '100' }];
-    const mockTransactions = [{ /* mock transaction data */ }];
-
-    mockSnarkOSDBService.getBlocksByValidator = jest.fn().mockResolvedValue(mockBlocks);
-    mockSnarkOSDBService.getTransactionsByValidator = jest.fn().mockResolvedValue(mockTransactions);
-
-    const result = await performanceMetricsService.calculateValidatorPerformance('testAddress', 86400);
-
-    expect(result).toHaveProperty('blocksProposed');
-    expect(result).toHaveProperty('transactionsProcessed');
-    expect(result).toHaveProperty('uptime');
-    expect(result).toHaveProperty('averageResponseTime');
-  });
-
   describe('calculateUptime', () => {
     it('should calculate uptime correctly', async () => {
-      mockSnarkOSDBService.getTotalBlocksInTimeFrame.mockResolvedValue(100);
-      mockSnarkOSDBService.getBlocksByValidator.mockResolvedValue(Array(80).fill({}));
-
-      const result = await performanceMetricsService['calculateUptime']('testAddress', 3600);
-      expect(result).toBe(80);
-    });
-  });
-
-  describe('calculateAverageResponseTime', () => {
-    it('should calculate average response time correctly', async () => {
-      const mockBlocks = [
-        { timestamp: new Date('2023-01-01T00:00:00Z') },
-        { timestamp: new Date('2023-01-01T00:00:10Z') },
-        { timestamp: new Date('2023-01-01T00:00:25Z') }
+      const mockCommitteeEntries = [
+        CommitteeParticipation.build({ id: 1, committee_member_id: 1, committee_id: 'committee1', round: 1, block_height: 1, timestamp: 1000 }),
+        CommitteeParticipation.build({ id: 2, committee_member_id: 1, committee_id: 'committee1', round: 2, block_height: 2, timestamp: 2000 }),
       ];
-      mockSnarkOSDBService.getBlocksByValidator.mockResolvedValue(mockBlocks);
+      const mockBatches = [
+        Batch.build({ id: 1, batch_id: 'batch1', author: 'testAddress', round: 1, timestamp: 1100, committee_id: 'committee1', block_height: 1 }),
+        Batch.build({ id: 2, batch_id: 'batch2', author: 'testAddress', round: 1, timestamp: 1200, committee_id: 'committee1', block_height: 1 }),
+        Batch.build({ id: 3, batch_id: 'batch3', author: 'testAddress', round: 2, timestamp: 2100, committee_id: 'committee1', block_height: 2 }),
+      ];
 
-      const result = await performanceMetricsService['calculateAverageResponseTime']('testAddress', 3600);
-      expect(result).toBe(12500); // (10000 + 15000) / 2 = 12500 ms
+      mockSnarkOSDBService.getCommitteeEntriesForValidator.mockResolvedValue(mockCommitteeEntries);
+      mockSnarkOSDBService.getValidatorBatches.mockResolvedValue(mockBatches);
+      mockSnarkOSDBService.getCommitteeSizeForRound.mockResolvedValue({ committee_size: 10 });
+
+      const result = await performanceMetricsService.calculateUptime('testAddress', 2000);
+      
+      // Beklenen batch sayısı: (1000 / 5 / 10) + (1000 / 5 / 10) = 20 + 20 = 40
+      // Gerçek batch sayısı: 2 + 1 = 3
+      // Uptime: (3 / 40) * 100 = 7.5%
+      expect(result).toBeCloseTo(7.5, 2);
     });
 
-    it('should return 0 if there are less than 2 blocks', async () => {
-      mockSnarkOSDBService.getBlocksByValidator.mockResolvedValue([{ timestamp: new Date() }]);
-
-      const result = await performanceMetricsService['calculateAverageResponseTime']('testAddress', 3600);
-      expect(result).toBe(0);
-    });
+    // ... Diğer test senaryoları ...
   });
+
+  // ... Diğer testler ...
 });

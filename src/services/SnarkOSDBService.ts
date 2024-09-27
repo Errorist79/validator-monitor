@@ -1,19 +1,15 @@
-import pkg from 'pg';
-const { Pool } = pkg;
 import { config } from '../config/index.js';
 import logger from '../utils/logger.js';
-import { Block } from '../types/Block.js';
-
-type CommitteeEntry = {
-  id: number;
-  validator_address: string;
-  start_height: number;
-  end_height: number | null;
-};
+import { Block, BlockAttributes } from '../database/models/Block.js';
+import { CommitteeMember } from '../database/models/CommitteeMember.js';
+import { CommitteeParticipation } from '../database/models/CommitteeParticipation.js';
+import { Batch } from '../database/models/Batch.js';
+import { UptimeSnapshot } from '../database/models/UptimeSnapshot.js';
+import pkg from 'pg';
+const { Pool } = pkg;
 
 export class SnarkOSDBService {
   private pool: pkg.Pool;
-
   constructor() {
     this.pool = new Pool({
       connectionString: config.database.url,
@@ -37,13 +33,12 @@ export class SnarkOSDBService {
   async checkDatabaseStructure(): Promise<boolean> {
     const client = await this.pool.connect();
     try {
-      const tables = ['validators', 'blocks', 'committee_entries', 'delegations', 'rewards'];
+      const tables = ['blocks', 'committee_members', 'committee_participation', 'batches', 'uptime_snapshots'];
       const indexes = [
-        'idx_blocks_validator_address',
-        'idx_blocks_timestamp',
-        'idx_committee_entries_validator',
-        'idx_delegations_validator',
-        'idx_rewards_validator'
+        'idx_blocks_round',
+        'idx_committee_participation_round',
+        'idx_batches_round',
+        'idx_uptime_snapshots_end_round'
       ];
 
       for (const table of tables) {
@@ -82,58 +77,81 @@ export class SnarkOSDBService {
   }
 
   async initializeDatabase(): Promise<void> {
+    const client = await this.pool.connect();
     try {
-      await this.pool.query(`
-        CREATE TABLE IF NOT EXISTS validators (
-          address TEXT PRIMARY KEY,
-          stake BIGINT,
-          is_active BOOLEAN,
-          bonded BIGINT,
-          last_seen TIMESTAMP,
-          uptime FLOAT,
-          total_blocks_produced INTEGER,
-          total_rewards BIGINT,
-          commission_rate FLOAT,
-          last_uptime_update TIMESTAMP
-        );
-
+      await client.query(`
         CREATE TABLE IF NOT EXISTS blocks (
-          height INTEGER PRIMARY KEY,
-          hash TEXT UNIQUE,
-          previous_hash TEXT,
-          timestamp TIMESTAMP,
-          validator_address TEXT,
-          total_fees BIGINT
+          height BIGINT PRIMARY KEY,
+          hash TEXT UNIQUE NOT NULL,
+          previous_hash TEXT NOT NULL,
+          round BIGINT NOT NULL,
+          timestamp BIGINT NOT NULL,
+          transactions_count INTEGER NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS committee_entries (
-          id SERIAL PRIMARY KEY,
-          validator_address TEXT,
-          start_height BIGINT NOT NULL,
-          end_height BIGINT,
-          created_at TIMESTAMP DEFAULT NOW()
+        CREATE TABLE IF NOT EXISTS validator_status (
+          address TEXT PRIMARY KEY,
+          last_active_round BIGINT,
+          consecutive_inactive_rounds INT DEFAULT 0,
+          is_active BOOLEAN DEFAULT true,
+          last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE TABLE IF NOT EXISTS delegations (
+        CREATE TABLE IF NOT EXISTS committee_members (
           id SERIAL PRIMARY KEY,
-          delegator_address TEXT,
-          validator_address TEXT,
-          amount BIGINT,
-          timestamp TIMESTAMP
+          address TEXT UNIQUE NOT NULL,
+          first_seen_block BIGINT NOT NULL,
+          last_seen_block BIGINT,
+          total_stake NUMERIC NOT NULL,
+          is_open BOOLEAN NOT NULL,
+          commission NUMERIC NOT NULL,
+          is_active BOOLEAN NOT NULL DEFAULT true,
+          last_updated TIMESTAMP NOT NULL DEFAULT NOW()
         );
 
-        CREATE TABLE IF NOT EXISTS rewards (
+        CREATE TABLE IF NOT EXISTS committee_participation (
           id SERIAL PRIMARY KEY,
-          validator_address TEXT,
-          amount BIGINT,
-          block_height INTEGER,
-          timestamp TIMESTAMP
+          committee_member_id INTEGER REFERENCES committee_members(id),
+          committee_id TEXT NOT NULL,
+          round BIGINT NOT NULL,
+          block_height BIGINT REFERENCES blocks(height),
+          timestamp BIGINT NOT NULL,
+          UNIQUE (committee_member_id, round)
         );
+
+        CREATE TABLE IF NOT EXISTS batches (
+          id SERIAL PRIMARY KEY,
+          batch_id TEXT UNIQUE NOT NULL,
+          author TEXT NOT NULL,
+          round BIGINT NOT NULL,
+          timestamp BIGINT NOT NULL,
+          committee_id TEXT NOT NULL,
+          block_height BIGINT REFERENCES blocks(height)
+        );
+
+        CREATE TABLE IF NOT EXISTS uptime_snapshots (
+          id SERIAL PRIMARY KEY,
+          committee_member_id INTEGER REFERENCES committee_members(id),
+          start_round BIGINT NOT NULL,
+          end_round BIGINT NOT NULL,
+          total_rounds INTEGER NOT NULL,
+          participated_rounds INTEGER NOT NULL,
+          uptime_percentage NUMERIC(5,2) NOT NULL,
+          calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_blocks_round ON blocks(round);
+        CREATE INDEX IF NOT EXISTS idx_committee_participation_round ON committee_participation(round);
+        CREATE INDEX IF NOT EXISTS idx_batches_round ON batches(round);
+        CREATE INDEX IF NOT EXISTS idx_uptime_snapshots_end_round ON uptime_snapshots(end_round);
+        CREATE INDEX IF NOT EXISTS idx_validator_status_is_active ON validator_status(is_active);
       `);
-      logger.info("Database tables created successfully");
+      logger.info('Database schema initialized successfully');
     } catch (error) {
-      logger.error("Database initialization error:", error);
+      logger.error('Error initializing database schema:', error);
       throw error;
+    } finally {
+      client.release();
     }
   }
 
@@ -142,7 +160,7 @@ export class SnarkOSDBService {
     try {
       await client.query('BEGIN');
 
-      const tables = ['validators', 'blocks', 'committee_entries', 'delegations', 'rewards'];
+      const tables = ['blocks', 'committee_members', 'committee_participation', 'batches', 'uptime_snapshots'];
       for (const table of tables) {
         await this.checkAndUpdateTable(client, table);
       }
@@ -177,58 +195,74 @@ export class SnarkOSDBService {
   }
 
   private getExpectedColumns(table: string): { [key: string]: string } {
-    const columnDefinitions: { [key: string]: { [key: string]: string } } = {
-      validators: {
-        address: 'TEXT PRIMARY KEY',
-        stake: 'BIGINT',
-        is_active: 'BOOLEAN',
-        bonded: 'BIGINT',
-        last_seen: 'TIMESTAMP',
-        uptime: 'FLOAT',
-        total_blocks_produced: 'INTEGER',
-        total_rewards: 'BIGINT',
-        commission_rate: 'FLOAT',
-        last_uptime_update: 'TIMESTAMP'
-      },
-      blocks: {
-        height: 'BIGINT PRIMARY KEY',
-        hash: 'TEXT UNIQUE NOT NULL',
-        previous_hash: 'TEXT NOT NULL',
-        timestamp: 'TIMESTAMP',
-        transactions: 'JSONB',
-        validator_address: 'TEXT',
-        total_fees: 'BIGINT',
-        transactions_count: 'INTEGER'
-      },
-      committee_entries: {
-        id: 'SERIAL PRIMARY KEY',
-        validator_address: 'TEXT',
-        start_height: 'BIGINT NOT NULL',
-        end_height: 'BIGINT',
-        created_at: 'TIMESTAMP DEFAULT NOW()'
-      },
-      delegations: {
-        id: 'SERIAL PRIMARY KEY',
-        delegator_address: 'TEXT',
-        validator_address: 'TEXT',
-        amount: 'BIGINT',
-        timestamp: 'TIMESTAMP'
-      },
-      rewards: {
-        id: 'SERIAL PRIMARY KEY',
-        validator_address: 'TEXT',
-        amount: 'BIGINT',
-        block_height: 'INTEGER',
-        timestamp: 'TIMESTAMP'
-      }
-    };
-
-    return columnDefinitions[table] || {};
+    switch (table) {
+      case 'blocks':
+        return {
+          height: 'BIGINT PRIMARY KEY',
+          hash: 'TEXT UNIQUE NOT NULL',
+          previous_hash: 'TEXT NOT NULL',
+          round: 'BIGINT NOT NULL',
+          timestamp: 'BIGINT NOT NULL',
+          transactions_count: 'INTEGER NOT NULL'
+        };
+      case 'committee_members':
+        return {
+          id: 'SERIAL PRIMARY KEY',
+          address: 'TEXT UNIQUE NOT NULL',
+          first_seen_block: 'BIGINT NOT NULL',
+          last_seen_block: 'BIGINT',
+          total_stake: 'NUMERIC NOT NULL',
+          is_open: 'BOOLEAN NOT NULL',
+          commission: 'NUMERIC NOT NULL',
+          is_active: 'BOOLEAN NOT NULL DEFAULT true',
+          last_updated: 'TIMESTAMP NOT NULL DEFAULT NOW()'
+        };
+      case 'committee_participation':
+        return {
+          id: 'SERIAL PRIMARY KEY',
+          committee_member_id: 'INTEGER REFERENCES committee_members(id)',
+          committee_id: 'TEXT NOT NULL',
+          round: 'BIGINT NOT NULL',
+          block_height: 'BIGINT REFERENCES blocks(height)',
+          timestamp: 'BIGINT NOT NULL'
+        };
+      case 'batches':
+        return {
+          id: 'SERIAL PRIMARY KEY',
+          batch_id: 'TEXT UNIQUE NOT NULL',
+          author: 'TEXT NOT NULL',
+          round: 'BIGINT NOT NULL',
+          timestamp: 'BIGINT NOT NULL',
+          committee_id: 'TEXT NOT NULL',
+          block_height: 'BIGINT REFERENCES blocks(height)'
+        };
+      case 'uptime_snapshots':
+        return {
+          id: 'SERIAL PRIMARY KEY',
+          committee_member_id: 'INTEGER REFERENCES committee_members(id)',
+          start_round: 'BIGINT NOT NULL',
+          end_round: 'BIGINT NOT NULL',
+          total_rounds: 'INTEGER NOT NULL',
+          participated_rounds: 'INTEGER NOT NULL',
+          uptime_percentage: 'NUMERIC(5,2) NOT NULL',
+          calculated_at: 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
+        };
+      case 'validator_status':
+        return {
+          address: 'TEXT PRIMARY KEY',
+          last_active_round: 'BIGINT NOT NULL',
+          consecutive_inactive_rounds: 'INTEGER NOT NULL DEFAULT 0',
+          is_active: 'BOOLEAN NOT NULL',
+          last_updated: 'TIMESTAMP NOT NULL DEFAULT NOW()'
+        };
+      default:
+        return {};
+    }
   }
 
   async getValidators(): Promise<any[]> {
     try {
-      const result = await this.pool.query('SELECT * FROM validators');
+      const result = await this.pool.query('SELECT * FROM committee_members');
       return result.rows;
     } catch (error: unknown) {
       if (error instanceof Error) {
@@ -262,33 +296,57 @@ export class SnarkOSDBService {
     }
   }
 
-  async insertBlock(block: Block): Promise<void> {
+  async upsertBlock(block: BlockAttributes): Promise<void> {
+    const query = `
+      INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (height) DO UPDATE SET
+      hash = EXCLUDED.hash,
+      previous_hash = EXCLUDED.previous_hash,
+      round = EXCLUDED.round,
+      timestamp = EXCLUDED.timestamp,
+      transactions_count = EXCLUDED.transactions_count
+    `;
+    await this.pool.query(query, [
+      block.height,
+      block.hash,
+      block.previous_hash,
+      block.round,
+      block.timestamp,
+      block.transactions_count
+    ]);
+  }
+
+  async upsertBlocks(blocks: BlockAttributes[]): Promise<void> {
+    const client = await this.pool.connect();
     try {
-      await this.pool.query(
-        `INSERT INTO blocks (height, hash, previous_hash, timestamp, transactions, validator_address, total_fees, transactions_count)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT (height) DO UPDATE
-         SET hash = EXCLUDED.hash,
-             previous_hash = EXCLUDED.previous_hash,
-             timestamp = EXCLUDED.timestamp,
-             transactions = EXCLUDED.transactions,
-             validator_address = EXCLUDED.validator_address,
-             total_fees = EXCLUDED.total_fees,
-             transactions_count = EXCLUDED.transactions_count`,
-        [
+      await client.query('BEGIN');
+      for (const block of blocks) {
+        const query = `
+          INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          ON CONFLICT (height) DO UPDATE SET
+          hash = EXCLUDED.hash,
+          previous_hash = EXCLUDED.previous_hash,
+          round = EXCLUDED.round,
+          timestamp = EXCLUDED.timestamp,
+          transactions_count = EXCLUDED.transactions_count
+        `;
+        await client.query(query, [
           block.height,
           block.hash,
           block.previous_hash,
+          block.round,
           block.timestamp,
-          JSON.stringify(block.transactions),
-          block.validator_address,
-          block.total_fees?.toString(),
           block.transactions_count
-        ]
-      );
+        ]);
+      }
+      await client.query('COMMIT');
     } catch (error) {
-      logger.error('Error inserting block:', error);
+      await client.query('ROLLBACK');
       throw error;
+    } finally {
+      client.release();
     }
   }
 
@@ -306,28 +364,30 @@ export class SnarkOSDBService {
     }
   }
 
-  async updateValidator(address: string, stake: bigint, isActive: boolean, bonded: bigint): Promise<void> {
-    try {
-      await this.pool.query(
-        'UPDATE validators SET stake = $1, is_active = $2, bonded = $3, last_seen = NOW() WHERE address = $4',
-        [stake.toString(), isActive, bonded.toString(), address]
-      );
-    } catch (error) {
-      logger.error(`Error updating validator ${address}:`, error);
-      throw error;
-    }
+  async updateValidator(address: string, stake: bigint, isOpen: boolean, commission: bigint): Promise<void> {
+    const query = `
+      UPDATE committee_members 
+      SET stake = $2, is_open = $3, commission = $4, last_updated = NOW()
+      WHERE address = $1
+    `;
+    await this.pool.query(query, [address, stake.toString(), isOpen, commission.toString()]);
   }
 
-  async insertValidator(address: string, stake: bigint, isActive: boolean, bonded: bigint): Promise<void> {
-    try {
-      await this.pool.query(
-        'INSERT INTO validators (address, stake, is_active, bonded, last_seen) VALUES ($1, $2, $3, $4, NOW())',
-        [address, stake.toString(), isActive, bonded.toString()]
-      );
-    } catch (error) {
-      logger.error(`Error inserting validator ${address}:`, error);
-      throw error;
-    }
+  async insertValidator(address: string, stake: bigint, isOpen: boolean, commission: bigint): Promise<void> {
+    const query = `
+      INSERT INTO committee_members (address, stake, is_open, commission, first_seen_block, last_updated)
+      VALUES ($1, $2, $3, $4, (SELECT MAX(height) FROM blocks), NOW())
+    `;
+    await this.pool.query(query, [address, stake.toString(), isOpen, commission.toString()]);
+  }
+
+  async deactivateValidator(address: string): Promise<void> {
+    const query = `
+      UPDATE committee_members
+      SET is_active = false, last_updated = NOW()
+      WHERE address = $1
+    `;
+    await this.pool.query(query, [address]);
   }
 
   async executeQuery(query: string, params: any[] = []): Promise<any> {
@@ -383,44 +443,6 @@ export class SnarkOSDBService {
     }
   }
 
-  async saveBlocks(blocks: Block[]): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      for (const block of blocks) {
-        const query = `
-          INSERT INTO blocks (height, hash, previous_hash, timestamp, transactions, validator_address, total_fees, transactions_count)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-          ON CONFLICT (height) DO UPDATE
-          SET hash = EXCLUDED.hash,
-              previous_hash = EXCLUDED.previous_hash,
-              timestamp = EXCLUDED.timestamp,
-              transactions = EXCLUDED.transactions,
-              validator_address = EXCLUDED.validator_address,
-              total_fees = EXCLUDED.total_fees,
-              transactions_count = EXCLUDED.transactions_count;
-        `;
-        const values = [
-          block.height,
-          block.hash,
-          block.previous_hash,
-          block.timestamp,
-          JSON.stringify(block.transactions),
-          block.validator_address,
-          block.total_fees?.toString(),
-          block.transactions_count
-        ];
-        await client.query(query, values);
-      }
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      logger.error('Error saving blocks:', error);
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
 
   async updateValidatorBlockProduction(address: string, blockReward: bigint): Promise<void> {
     try {
@@ -510,22 +532,6 @@ export class SnarkOSDBService {
     }
   }
 
-  async getCommitteeEntriesForValidator(validatorAddress: string, timeFrame: number): Promise<any[]> {
-    try {
-      const result = await this.pool.query(`
-        SELECT start_height, end_height
-        FROM committee_entries
-        WHERE validator_address = $1
-        AND start_height >= (SELECT MAX(height) - $2 FROM blocks)
-        ORDER BY start_height DESC
-      `, [validatorAddress, timeFrame]);
-      return result.rows;
-    } catch (error) {
-      logger.error(`Error getting committee entries for validator ${validatorAddress}:`, error);
-      throw error;
-    }
-  }
-
   async getBlockCountBetween(startHeight: number, endHeight: number): Promise<number> {
     try {
       const result = await this.pool.query(`
@@ -584,19 +590,7 @@ export class SnarkOSDBService {
       throw error;
     }
   }
-
-  public async getCommitteeEntries(validatorAddress: string, startHeight: number, endHeight: number): Promise<CommitteeEntry[]> {
-    const query = `
-      SELECT *
-      FROM committee_entries
-      WHERE validator_address = $1
-        AND (start_height <= $2) AND (end_height IS NULL OR end_height >= $3)
-    `;
-    const values = [validatorAddress, endHeight, startHeight];
-    const result = await this.pool.query(query, values);
-    return result.rows;
-  }
-
+  
   public async getBlockCountInHeightRange(startHeight: number, endHeight: number): Promise<number> {
     const query = `
       SELECT COUNT(*) AS count
@@ -706,6 +700,193 @@ export class SnarkOSDBService {
       throw error;
     } finally {
       client.release();
+    }
+  }
+
+  async getCommitteeEntriesForValidator(validatorAddress: string, startTimestamp: number, endTimestamp: number): Promise<CommitteeParticipation[]> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT cp.id, cp.committee_member_id, cp.committee_id, cp.round, cp.block_height, cp.timestamp
+         FROM committee_participation cp
+         JOIN committee_members cm ON cp.committee_member_id = cm.id
+         WHERE cm.address = $1 AND cp.timestamp BETWEEN $2 AND $3
+         ORDER BY cp.timestamp`,
+        [validatorAddress, startTimestamp, endTimestamp]
+      );
+      return result.rows;
+    } catch (error) {
+      logger.error('Error getting committee entries for validator:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getValidatorBatches(validatorAddress: string, startTimestamp: number, endTimestamp: number): Promise<Batch[]> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT id, batch_id, author, round, timestamp, committee_id, block_height
+         FROM batches
+         WHERE author = $1 AND timestamp BETWEEN $2 AND $3
+         ORDER BY timestamp`,
+        [validatorAddress, startTimestamp, endTimestamp]
+      );
+      return result.rows;
+    } catch (error) {
+      logger.error('Error getting validator batches:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async insertUptimeSnapshot(snapshot: Omit<UptimeSnapshot, 'id' | 'calculated_at'>): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query(
+        `INSERT INTO uptime_snapshots (committee_member_id, start_round, end_round, total_rounds, participated_rounds, uptime_percentage)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [snapshot.committee_member_id, snapshot.start_round, snapshot.end_round, snapshot.total_rounds, snapshot.participated_rounds, snapshot.uptime_percentage]
+      );
+    } catch (error) {
+      logger.error('Error inserting uptime snapshot:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getCommitteeSizeForRound(round: number): Promise<{ committee_size: number }> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT COUNT(DISTINCT committee_member_id) as committee_size
+         FROM committee_participation
+         WHERE round = $1`,
+        [round]
+      );
+      return { committee_size: parseInt(result.rows[0].committee_size) };
+    } catch (error) {
+      logger.error(`Error getting committee size for round ${round}:`, error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async insertOrUpdateCommitteeMember(
+    address: string, 
+    blockHeight: number, 
+    stake: bigint, 
+    isOpen: boolean, 
+    commission: bigint
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `INSERT INTO committee_members (address, first_seen_block, last_seen_block, stake, is_open, commission)
+         VALUES ($1, $2, $2, $3, $4, $5)
+         ON CONFLICT (address) DO UPDATE SET 
+         last_seen_block = $2,
+         stake = $3,
+         is_open = $4,
+         commission = $5`,
+        [address, blockHeight, stake.toString(), isOpen, commission.toString()]
+      );
+    } catch (error) {
+      logger.error('Error inserting or updating committee member:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async insertCommitteeParticipation(participation: {
+    committee_member_address: string;
+    committee_id: string;
+    round: number;
+    block_height: number;
+    timestamp: number;
+  }): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `INSERT INTO committee_participation (committee_member_id, committee_id, round, block_height, timestamp)
+         VALUES (
+           (SELECT id FROM committee_members WHERE address = $1),
+           $2, $3, $4, $5
+         ) ON CONFLICT (committee_member_id, round) DO NOTHING`,
+        [participation.committee_member_address, participation.committee_id, participation.round, participation.block_height, participation.timestamp]
+      );
+    } catch (error) {
+      logger.error('Error inserting committee participation:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async insertBatch(batch: {
+    batch_id: string;
+    author: string;
+    round: number;
+    timestamp: number;
+    committee_id: string;
+    block_height: number;
+  }): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `INSERT INTO batches (batch_id, author, round, timestamp, committee_id, block_height)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (batch_id) DO NOTHING`,
+        [batch.batch_id, batch.author, batch.round, batch.timestamp, batch.committee_id, batch.block_height]
+      );
+    } catch (error) {
+      logger.error('Error inserting batch:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateValidatorStatus(address: string, currentRound: bigint, isActive: boolean): Promise<void> {
+    const query = `
+      INSERT INTO validator_status (address, last_active_round, consecutive_inactive_rounds, is_active, last_updated)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+      ON CONFLICT (address) DO UPDATE SET
+        last_active_round = CASE WHEN $4 = true THEN $2 ELSE validator_status.last_active_round END,
+        consecutive_inactive_rounds = CASE 
+          WHEN $4 = true THEN 0 
+          ELSE validator_status.consecutive_inactive_rounds + 1 
+        END,
+        is_active = CASE 
+          WHEN $4 = true THEN true 
+          WHEN validator_status.consecutive_inactive_rounds + 1 >= 10 THEN false 
+          ELSE validator_status.is_active 
+        END,
+        last_updated = CURRENT_TIMESTAMP
+    `;
+    await this.pool.query(query, [address, currentRound.toString(), 0, isActive]);
+  }
+
+  async getActiveValidators(): Promise<string[]> {
+    const query = 'SELECT address FROM validator_status WHERE is_active = true';
+    const result = await this.pool.query(query);
+    return result.rows.map(row => row.address);
+  }
+
+  async getValidatorByAddress(address: string): Promise<any | null> {
+    try {
+      const result = await this.pool.query('SELECT * FROM committee_members WHERE address = $1', [address]);
+      return result.rows[0] || null;
+    } catch (error: unknown) {
+      if (error instanceof Error) {
+        throw new Error(`SnarkOS DB getValidatorByAddress error: ${error.message}`);
+      }
+      throw new Error('SnarkOS DB getValidatorByAddress error: An unknown error occurred');
     }
   }
 }

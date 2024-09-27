@@ -1,115 +1,123 @@
 import { AleoSDKService } from './AleoSDKService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
+import { ValidatorService } from './ValidatorService.js';
 import logger from '../utils/logger.js';
+import { BlockAttributes, APIBlock } from '../database/models/Block.js';
 
 export class SyncService {
   constructor(
     private aleoSDKService: AleoSDKService, 
-    private snarkOSDBService: SnarkOSDBService
+    private snarkOSDBService: SnarkOSDBService,
+    private validatorService: ValidatorService
   ) {}
 
   async syncLatestBlocks(count: number = 100): Promise<void> {
-    const startTime = Date.now();
-    try {
-      const latestBlockHeight = await this.aleoSDKService.getLatestBlockHeight();
-      if (latestBlockHeight === null) {
-        throw new Error('Failed to get latest block height');
-      }
+    const batchSize = 10;
+    const retryAttempts = 3;
+    let currentHeight = await this.snarkOSDBService.getLatestBlockHeight();
+    const latestNetworkHeight = await this.aleoSDKService.getLatestBlockHeight();
 
-      const startHeight = Math.max(0, latestBlockHeight - count + 1);
-      logger.info(`Starting synchronization from block ${startHeight} to ${latestBlockHeight}`);
+    if (latestNetworkHeight === null) {
+      logger.error('Failed to get latest network height');
+      return;
+    }
 
-      const blocks = [];
-      for (let height = startHeight; height <= latestBlockHeight; height++) {
-        const block = await this.aleoSDKService.getBlockByHeight(height);
-        if (block) {
-          blocks.push(block);
-          if (blocks.length % 10 === 0) {
-            logger.debug(`Fetched ${blocks.length} blocks`);
+    while (currentHeight < latestNetworkHeight && count > 0) {
+      const endHeight = Math.min(currentHeight + batchSize, latestNetworkHeight, currentHeight + count);
+      
+      for (let attempt = 0; attempt < retryAttempts; attempt++) {
+        try {
+          const blocks = await this.fetchBlockRange(currentHeight + 1, endHeight);
+          await this.snarkOSDBService.upsertBlocks(blocks);
+          break;
+        } catch (error) {
+          if (attempt === retryAttempts - 1) {
+            logger.error(`Failed to sync blocks from ${currentHeight + 1} to ${endHeight} after ${retryAttempts} attempts`);
+            throw error;
           }
-        } else {
-          logger.warn(`Failed to fetch block at height ${height}`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
         }
       }
+      
+      currentHeight = endHeight;
+      count -= (endHeight - currentHeight);
+    }
+  }
 
-      if (blocks.length > 0) {
-        await this.snarkOSDBService.saveBlocks(blocks);
-        logger.info(`Successfully synced ${blocks.length} blocks`);
+  private async processBlock(apiBlock: APIBlock, height: number): Promise<void> {
+    try {
+      const blockAttributes: BlockAttributes = {
+        height: height,
+        hash: apiBlock.block_hash,
+        previous_hash: apiBlock.previous_hash,
+        round: parseInt(apiBlock.header.metadata.round),
+        timestamp: parseInt(apiBlock.header.metadata.timestamp),
+        validator_address: this.getValidatorAddress(apiBlock),
+        total_fees: BigInt(apiBlock.header.metadata.cumulative_weight),
+        transactions_count: apiBlock.transactions ? apiBlock.transactions.length : 0
+      };
+
+      await this.snarkOSDBService.upsertBlock(blockAttributes);
+      await this.processBatches(apiBlock, height);
+    } catch (error) {
+      logger.error(`Error processing block at height ${height}:`, error);
+      throw error;
+    }
+  }
+
+  private getValidatorAddress(apiBlock: APIBlock): string | undefined {
+    const firstRound = Object.keys(apiBlock.authority.subdag.subdag)[0];
+    if (firstRound && apiBlock.authority.subdag.subdag[firstRound].length > 0) {
+      return apiBlock.authority.subdag.subdag[firstRound][0].batch_header.author;
+    }
+    return undefined;
+  }
+
+  private async processBatches(apiBlock: APIBlock, blockHeight: number): Promise<void> {
+    const firstRound = Object.keys(apiBlock.authority.subdag.subdag)[0];
+    const batches = apiBlock.authority.subdag.subdag[firstRound];
+
+    for (const batch of batches) {
+      await this.processBatch(batch, parseInt(firstRound), blockHeight);
+    }
+  }
+
+  private async processBatch(batch: any, round: number, blockHeight: number): Promise<void> {
+    try {
+      await this.snarkOSDBService.insertBatch({
+        batch_id: batch.batch_header.batch_id,
+        author: batch.batch_header.author,
+        round: round,
+        timestamp: batch.batch_header.timestamp,
+        committee_id: batch.batch_header.committee_id,
+        block_height: blockHeight
+      });
+
+      await this.snarkOSDBService.insertOrUpdateCommitteeMember(batch.batch_header.author, blockHeight);
+
+      await this.snarkOSDBService.insertCommitteeParticipation({
+        committee_member_address: batch.batch_header.author,
+        committee_id: batch.batch_header.committee_id,
+        round: round,
+        block_height: blockHeight,
+        timestamp: batch.batch_header.timestamp
+      });
+    } catch (error) {
+      logger.error(`Error processing batch ${batch.batch_header.batch_id}:`, error);
+      throw error;
+    }
+  }
+
+  private async fetchBlockRange(startHeight: number, endHeight: number): Promise<BlockAttributes[]> {
+    const blocks: BlockAttributes[] = [];
+    for (let height = startHeight; height <= endHeight; height++) {
+      const apiBlock = await this.aleoSDKService.getBlockByHeight(height);
+      if (apiBlock) {
+        blocks.push(this.aleoSDKService.convertToBlockAttributes(apiBlock));
       } else {
-        logger.warn('No blocks to synchronize');
+        logger.warn(`Block not found at height ${height}`);
       }
-
-      const endTime = Date.now();
-      const duration = (endTime - startTime) / 1000;
-      logger.info(`Synchronization completed in ${duration} seconds`);
-    } catch (error) {
-      logger.error('Error during block synchronization:', error);
-      throw error;
     }
-  }
-
-  async updateCommitteeBondedDelegatedMap(): Promise<void> {
-    try {
-      const committee = await this.aleoSDKService.getLatestCommittee();
-      const committeeMap: Record<string, [bigint, boolean, bigint]> = {};
-      const bondedMap = new Map<string, bigint>();
-      const delegatedMap = new Map<string, bigint>();
-
-      for (const address of Object.keys(committee.members)) {
-        const committeeData = await this.aleoSDKService.getCommitteeMapping(address);
-        if (committeeData) {
-          committeeMap[address] = [BigInt(committee.members[address][0]), committeeData.isOpen, BigInt(committeeData.commission)];
-        }
-
-        const bondedData = await this.aleoSDKService.getBondedMapping(address);
-        if (bondedData) {
-          bondedMap.set(address, bondedData.microcredits);
-        }
-
-        const delegatedData = await this.aleoSDKService.getDelegatedMapping(address);
-        if (delegatedData) {
-          delegatedMap.set(address, delegatedData);
-        }
-      }
-
-      await this.snarkOSDBService.updateCommitteeMap(committeeMap);
-      await this.snarkOSDBService.updateBondedMap(bondedMap);
-      await this.snarkOSDBService.updateDelegatedMap(delegatedMap);
-
-      logger.info('Committee, bonded, and delegated maps updated successfully');
-    } catch (error) {
-      logger.error('Error updating committee, bonded, and delegated maps:', error);
-      throw error;
-    }
-  }
-
-  async updateNetworkTotalStake(): Promise<void> {
-    try {
-      const committee = await this.aleoSDKService.getLatestCommittee();
-      let totalStake = BigInt(0);
-
-      for (const address of Object.keys(committee.members)) {
-        const delegated = await this.aleoSDKService.getDelegatedMapping(address);
-        totalStake += delegated;
-      }
-
-      await this.snarkOSDBService.updateNetworkTotalStake(totalStake);
-      logger.info(`Network total stake updated: ${totalStake}`);
-    } catch (error) {
-      logger.error('Error updating network total stake:', error);
-      throw error;
-    }
-  }
-
-  async syncAndUpdateAll(blockCount: number = 100): Promise<void> {
-    try {
-      await this.syncLatestBlocks(blockCount);
-      await this.updateCommitteeBondedDelegatedMap();
-      await this.updateNetworkTotalStake();
-      logger.info('Sync and update completed successfully');
-    } catch (error) {
-      logger.error('Error during sync and update process:', error);
-      throw error;
-    }
+    return blocks;
   }
 }

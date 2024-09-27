@@ -1,7 +1,7 @@
 import { AleoSDKService } from './AleoSDKService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
 import logger from '../utils/logger.js';
-import { Block } from '../types/Block.js';
+import { Block, APIBlock, BlockAttributes } from '../types/Block.js';
 
 export class BlockService {
   constructor(
@@ -12,24 +12,40 @@ export class BlockService {
   async syncBlocks(batchSize: number = 10): Promise<void> {
     try {
       const latestSyncedBlock = await this.snarkOSDBService.getLatestBlockHeight();
-      const latestNetworkBlock = await this.getLatestBlock();
+      const latestNetworkBlock = await this.getLatestNetworkBlockHeight();
       
-      console.log("Latest synchronized block:", latestSyncedBlock);
-      console.log("Latest block in the network:", latestNetworkBlock);
+      logger.info(`Latest synchronized block: ${latestSyncedBlock}`);
+      logger.info(`Latest block in the network: ${latestNetworkBlock}`);
       
-      // ... existing synchronization logic ...
+      if (latestNetworkBlock > latestSyncedBlock) {
+        let currentHeight = latestSyncedBlock + 1;
+        while (currentHeight <= latestNetworkBlock) {
+          const endHeight = Math.min(currentHeight + batchSize - 1, latestNetworkBlock);
+          logger.info(`Syncing blocks from ${currentHeight} to ${endHeight}`);
+          
+          const blocks = await this.fetchBlockRange(currentHeight, endHeight);
+          await this.snarkOSDBService.upsertBlocks(blocks);
+          
+          currentHeight = endHeight + 1;
+        }
+        logger.info('Block synchronization completed successfully');
+      } else {
+        logger.info('No new blocks to synchronize');
+      }
     } catch (error) {
-      console.error('Error occurred during block synchronization:', error);
+      logger.error('Error occurred during block synchronization:', error);
+      throw error;
     }
   }
 
-  private async fetchBlockRange(startHeight: number, endHeight: number): Promise<Block[]> {
-    const blocks: Block[] = [];
+  private async fetchBlockRange(startHeight: number, endHeight: number): Promise<BlockAttributes[]> {
+    const blocks: BlockAttributes[] = [];
     for (let height = startHeight; height <= endHeight; height++) {
       try {
-        const block = await this.aleoSDKService.getBlockByHeight(height);
-        if (block) {
-          blocks.push(block);
+        const apiBlock = await this.aleoSDKService.getBlockByHeight(height);
+        if (apiBlock) {
+          const blockAttributes = this.convertToBlockAttributes(apiBlock);
+          blocks.push(blockAttributes);
         } else {
           logger.warn(`Block not retrieved: ${height}`);
         }
@@ -40,21 +56,34 @@ export class BlockService {
     return blocks;
   }
 
-  async getLatestBlock() {
+  async getLatestNetworkBlockHeight(): Promise<number> {
     try {
-      const latestHeight = await this.aleoSDKService.getLatestBlockHeight();
-      if (latestHeight === null) {
-        throw new Error('Failed to get the latest block height');
-      }
-      return this.aleoSDKService.getBlockByHeight(latestHeight);
+      const latestBlock = await this.aleoSDKService.getLatestBlock();
+      return latestBlock ? latestBlock.height : 0;
     } catch (error) {
-      logger.error('Error occurred while fetching the latest block:', error);
+      logger.error('Error occurred while fetching the latest network block height:', error);
       throw error;
     }
   }
 
-  public async getBlockByHeight(height: number) {
-    return this.aleoSDKService.getBlockByHeight(height);
+  private convertToBlockAttributes(apiBlock: APIBlock): BlockAttributes {
+    return {
+      height: parseInt(apiBlock.header.metadata.height),
+      hash: apiBlock.block_hash,
+      previous_hash: apiBlock.previous_hash,
+      round: parseInt(apiBlock.header.metadata.round),
+      timestamp: parseInt(apiBlock.header.metadata.timestamp),
+      validator_address: this.getValidatorAddress(apiBlock),
+      transactions_count: apiBlock.transactions.length
+    };
+  }
+
+  private getValidatorAddress(apiBlock: APIBlock): string | undefined {
+    const firstRound = Object.keys(apiBlock.authority.subdag.subdag)[0];
+    if (firstRound && apiBlock.authority.subdag.subdag[firstRound].length > 0) {
+      return apiBlock.authority.subdag.subdag[firstRound][0].batch_header.author;
+    }
+    return undefined;
   }
 }
 
