@@ -72,17 +72,20 @@ export interface APIBlock {
 }
 
 export interface APITransaction {
-  id: string;
-  execution: {
-    transitions: APITransition[];
-    global_state_root: string;
-    proof: string;
+  status: string;
+  type: string;
+  index: number;
+  transaction: {
+    type: string;
+    id: string;
+    execution?: any; // Bu alanı isteğe bağlı yapıyoruz
+    fee?: {
+      transition: any;
+      global_state_root: string;
+      proof: string;
+    };
   };
-  fee: {
-    transition: APITransition;
-    global_state_root: string;
-    proof: string;
-  };
+  finalize?: any[];
 }
 
 export interface APITransition {

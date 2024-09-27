@@ -69,9 +69,8 @@ async function addTestData(snarkOSDBService: SnarkOSDBService) {
       previous_hash: `block_hash_${i - 1}`,
       round: height, // round değerini ekleyin (örneğin, height ile aynı olabilir)
       timestamp: new Date(timestamp).getTime(),
-      validator_address: i % 5 === 0 ? validatorAddress : `other_validator_${i % 4}`,
-      total_fees: BigInt(1000),
-      transactions_count: 0
+      transactions_count: 0,
+      block_reward: 123456
     };
     await snarkOSDBService.upsertBlocks([block]);
 

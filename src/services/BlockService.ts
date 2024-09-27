@@ -1,7 +1,7 @@
 import { AleoSDKService } from './AleoSDKService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
 import logger from '../utils/logger.js';
-import { Block, APIBlock, BlockAttributes } from '../types/Block.js';
+import { Block, APIBlock, BlockAttributes } from '../database/models/Block.js';
 
 export class BlockService {
   constructor(
@@ -73,8 +73,8 @@ export class BlockService {
       previous_hash: apiBlock.previous_hash,
       round: parseInt(apiBlock.header.metadata.round),
       timestamp: parseInt(apiBlock.header.metadata.timestamp),
-      validator_address: this.getValidatorAddress(apiBlock),
-      transactions_count: apiBlock.transactions.length
+      transactions_count: apiBlock.transactions.length,
+      block_reward: apiBlock.ratifications.find(r => r.type === 'block_reward')?.amount ? Number(apiBlock.ratifications.find(r => r.type === 'block_reward')?.amount) : 0
     };
   }
 

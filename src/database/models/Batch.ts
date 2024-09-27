@@ -1,7 +1,6 @@
 import { Model, DataTypes, Sequelize } from 'sequelize';
 
 export interface BatchAttributes {
-  id: number;
   batch_id: string;
   author: string;
   round: number;
@@ -11,7 +10,6 @@ export interface BatchAttributes {
 }
 
 export class Batch extends Model<BatchAttributes> implements BatchAttributes {
-  public id!: number;
   public batch_id!: string;
   public author!: string;
   public round!: number;
@@ -22,11 +20,6 @@ export class Batch extends Model<BatchAttributes> implements BatchAttributes {
 
 export const initBatch = (sequelize: Sequelize) => {
   Batch.init({
-    id: {
-      type: DataTypes.INTEGER,
-      autoIncrement: true,
-      primaryKey: true,
-    },
     batch_id: {
       type: DataTypes.STRING,
       unique: true,

@@ -25,9 +25,9 @@ describe('PerformanceMetricsService', () => {
         CommitteeParticipation.build({ id: 2, committee_member_id: 1, committee_id: 'committee1', round: 2, block_height: 2, timestamp: 2000 }),
       ];
       const mockBatches = [
-        Batch.build({ id: 1, batch_id: 'batch1', author: 'testAddress', round: 1, timestamp: 1100, committee_id: 'committee1', block_height: 1 }),
-        Batch.build({ id: 2, batch_id: 'batch2', author: 'testAddress', round: 1, timestamp: 1200, committee_id: 'committee1', block_height: 1 }),
-        Batch.build({ id: 3, batch_id: 'batch3', author: 'testAddress', round: 2, timestamp: 2100, committee_id: 'committee1', block_height: 2 }),
+        Batch.build({ batch_id: 'batch1', author: 'testAddress', round: 1, timestamp: 1100, committee_id: 'committee1', block_height: 1 }),
+        Batch.build({ batch_id: 'batch2', author: 'testAddress', round: 1, timestamp: 1200, committee_id: 'committee1', block_height: 1 }),
+        Batch.build({ batch_id: 'batch3', author: 'testAddress', round: 2, timestamp: 2100, committee_id: 'committee1', block_height: 2 }),
       ];
 
       mockSnarkOSDBService.getCommitteeEntriesForValidator.mockResolvedValue(mockCommitteeEntries);

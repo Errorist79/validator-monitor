@@ -6,9 +6,8 @@ export interface BlockAttributes {
   previous_hash: string;
   round: number;
   timestamp: number;
-  validator_address?: string;
-  total_fees?: bigint;
   transactions_count?: number;
+  block_reward?: number; // BigInt yerine number kullanıyoruz
 }
 
 export interface APIBlockMetadata {
@@ -52,26 +51,7 @@ export interface APIBatch {
 
 export interface APIAuthority {
   type: string;
-  subdag: {
-    subdag: {
-      [key: string]: APIBatch[];
-    };
-  };
-}
-
-export interface APIBlock {
-  block_hash: string;
-  previous_hash: string;
-  header: APIBlockHeader;
-  authority: APIAuthority;
-  ratifications: any[]; // Spesifik tip gerekirse güncellenebilir
-  solutions: Record<string, never>; // Boş nesne
-  transactions: APITransaction[];
-  aborted_transaction_ids: string[];
-}
-
-export interface APITransaction {
-  // API'den gelen transaction yapısına göre tanımlanmalı
+  subdag: APISubdag;
 }
 
 export interface APISubdag {
@@ -80,15 +60,85 @@ export interface APISubdag {
   };
 }
 
+export interface APITransactionInput {
+  type: string;
+  id: string;
+  value: string;
+}
+
+export interface APITransactionOutput {
+  type: string;
+  id: string;
+  value: string;
+}
+
+export interface APITransitionExecution {
+  transitions: {
+    id: string;
+    program: string;
+    function: string;
+    inputs: APITransactionInput[];
+    outputs: APITransactionOutput[];
+    tpk: string;
+    tcm: string;
+    scm: string;
+  }[];
+  global_state_root: string;
+  proof: string;
+}
+
+export interface APITransactionFee {
+  transition: {
+    id: string;
+    program: string;
+    function: string;
+    inputs: APITransactionInput[];
+    outputs: APITransactionOutput[];
+    tpk: string;
+    tcm: string;
+    scm: string;
+  };
+  global_state_root: string;
+  proof: string;
+}
+
+export interface APITransaction {
+  status: string;
+  type: string;
+  index: number;
+  transaction: {
+    type: string;
+    id: string;
+    execution?: APITransitionExecution; // Bu alanı isteğe bağlı yapıyoruz
+    fee?: APITransactionFee;
+  };
+  finalize?: any[]; // Finalize yapısını daha spesifik hale getirebiliriz
+}
+
+export interface APIBlock {
+  block_hash: string;
+  previous_hash: string;
+  header: APIBlockHeader;
+  authority: APIAuthority;
+  ratifications: APIRatification[]; // Ratifications yapısını daha spesifik hale getirebiliriz
+  solutions: Record<string, never>; // Boş nesne
+  transactions: APITransaction[];
+  aborted_transaction_ids: string[];
+}
+
+export interface APIRatification {
+  type: string;
+  amount?: number;
+  data?: any; // Spesifik ratification tipine göre değişebilir
+}
 export class Block extends Model<BlockAttributes> implements BlockAttributes {
   public height!: number;
   public hash!: string;
   public previous_hash!: string;
   public round!: number;
   public timestamp!: number;
-  public validator_address?: string;
-  public total_fees?: bigint;
   public transactions_count?: number;
+  public block_reward?: number; // BigInt yerine number kullanıyoruz
 
   static initModel(sequelize: Sequelize): void {
     Block.init({
@@ -103,15 +153,16 @@ export class Block extends Model<BlockAttributes> implements BlockAttributes {
       previous_hash: DataTypes.STRING,
       round: DataTypes.BIGINT,
       timestamp: DataTypes.BIGINT,
-      validator_address: DataTypes.STRING,
-      total_fees: DataTypes.BIGINT,
       transactions_count: DataTypes.INTEGER,
+      block_reward: {
+        type: DataTypes.BIGINT,
+        allowNull: true
+      },
     }, {
       sequelize,
       modelName: 'Block',
       indexes: [
         { fields: ['height'] },
-        { fields: ['validator_address'] },
         { fields: ['timestamp'] },
         { fields: ['round'] }
       ]
@@ -119,14 +170,15 @@ export class Block extends Model<BlockAttributes> implements BlockAttributes {
   }
 
   static fromAPIBlock(apiBlock: APIBlock): BlockAttributes {
+    const blockReward = apiBlock.ratifications.find(r => r.type === 'block_reward');
     return {
       height: parseInt(apiBlock.header.metadata.height),
       hash: apiBlock.block_hash,
       previous_hash: apiBlock.previous_hash,
       round: parseInt(apiBlock.header.metadata.round),
       timestamp: parseInt(apiBlock.header.metadata.timestamp),
-      validator_address: apiBlock.authority?.subdag?.subdag?.[Object.keys(apiBlock.authority.subdag.subdag)[0]]?.[0]?.batch_header?.author,
       transactions_count: apiBlock.transactions.length,
+      block_reward: blockReward ? Number(blockReward.amount) : undefined,
     };
   }
 }

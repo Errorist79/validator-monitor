@@ -1,24 +1,13 @@
 import { AleoNetworkClient } from '@provablehq/sdk';
 import winston from 'winston';
 import axios from 'axios';
-import { BlockAttributes, APIBlock } from '../types/Block.js';
+import { BlockAttributes, APIBlock } from '../database/models/Block.js';
 import { validateBlock } from '../utils/validation.js';
 import { AppError, ValidationError, NotFoundError } from '../utils/errors.js';
 import { metrics } from '../utils/metrics.js';
 import { getBigIntFromString } from '../utils/helpers.js';
-
-const logger = winston.createLogger({
-  level: 'debug',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.json()
-  ),
-  transports: [
-    new winston.transports.Console(),
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' }),
-  ],
-});
+import { BondedMapping, CommitteeMapping, LatestCommittee, DelegatedMapping } from '../database/models/Mapping.js';
+import logger from '../utils/logger.js';
 
 export class AleoSDKService {
   private network: AleoNetworkClient;
@@ -62,27 +51,40 @@ export class AleoSDKService {
   }
 
   public convertToBlockAttributes(apiBlock: APIBlock): BlockAttributes {
+    const blockReward = apiBlock.ratifications.find(r => r.type === 'block_reward');
     return {
       height: parseInt(apiBlock.header.metadata.height),
       hash: apiBlock.block_hash,
       previous_hash: apiBlock.previous_hash,
       round: parseInt(apiBlock.header.metadata.round),
       timestamp: parseInt(apiBlock.header.metadata.timestamp),
-      transactions_count: apiBlock.transactions.length
+      transactions_count: apiBlock.transactions.length,
+      block_reward: blockReward && blockReward.amount !== undefined ? Number(blockReward.amount) : undefined,
     };
   }
 
-  async getLatestCommittee(): Promise<{ starting_round: string; members: Record<string, [string, boolean, string]> }> {
+  async getLatestCommittee(): Promise<LatestCommittee> {
     try {
-      const response = await this.network.getLatestCommittee();
-      if (typeof response !== 'object' || response === null || !('starting_round' in response) || !('members' in response)) {
-        throw new Error('Invalid committee response structure');
+      const result = await this.network.getLatestCommittee();
+      if (this.isValidLatestCommittee(result)) {
+        return result;
       }
-      return response as { starting_round: string; members: Record<string, [string, boolean, string]> };
+      throw new Error('Invalid committee data structure');
     } catch (error) {
       logger.error('Error fetching latest committee:', error);
       throw error;
     }
+  }
+
+  private isValidLatestCommittee(data: any): data is LatestCommittee {
+    return (
+      typeof data === 'object' &&
+      data !== null &&
+      'id' in data &&
+      'starting_round' in data &&
+      'members' in data &&
+      'total_stake' in data
+    );
   }
 
   async getValidatorStake(address: string): Promise<bigint | null> {
@@ -95,62 +97,70 @@ export class AleoSDKService {
     }
   }
 
-  async getCommitteeMapping(address: string): Promise<{ isOpen: boolean; commission: number } | null> {
+  async getCommitteeMapping(address: string): Promise<CommitteeMapping | null> {
     try {
       const result = await this.network.getProgramMappingValue("credits.aleo", "committee", address);
-      if (!result) {
-        return null;
+      logger.debug(`Raw committee mapping result for ${address}:`, result);
+
+      if (typeof result === 'object' && result !== null && 'is_open' in result && 'commission' in result) {
+        return {
+          is_open: result.is_open === 'true',
+          commission: parseInt(String(result.commission).replace('u8', ''))
+        };
       }
-      const parsedResult = JSON.parse(result as string);
-      return {
-        isOpen: parsedResult.is_open,
-        commission: parseInt(parsedResult.commission.replace('u8', ''))
-      };
+
+      logger.warn(`Unexpected committee mapping format for ${address}:`, result);
+      return null;
     } catch (error) {
       logger.error(`Error fetching committee mapping for ${address}:`, error);
-      throw error;
+      return null;
     }
   }
 
-  async getBondedMapping(address: string): Promise<{ validator: string; microcredits: bigint } | null> {
+  async getBondedMapping(address: string): Promise<BondedMapping | null> {
     try {
       const result = await this.network.getProgramMappingValue("credits.aleo", "bonded", address);
-      if (!result) {
-        return null;
+      logger.debug(`Raw bonded mapping result for ${address}:`, result);
+
+      if (typeof result === 'object' && result !== null && 'validator' in result && 'microcredits' in result) {
+        return {
+          validator: String(result.validator),
+          microcredits: BigInt(String(result.microcredits).replace('u64', ''))
+        };
       }
-      const parsedResult = JSON.parse(result as string);
-      return {
-        validator: parsedResult.validator,
-        microcredits: getBigIntFromString(parsedResult.microcredits.replace('u64', ''))
-      };
+
+      logger.warn(`Unexpected bonded mapping format for ${address}:`, result);
+      return null;
     } catch (error) {
       logger.error(`Error fetching bonded mapping for ${address}:`, error);
-      throw error;
+      return null;
     }
   }
 
-  async getDelegatedMapping(address: string): Promise<bigint> {
+  async getDelegatedMapping(address: string): Promise<DelegatedMapping | null> {
     try {
       const result = await this.network.getProgramMappingValue("credits.aleo", "delegated", address);
-      if (!result) {
-        return BigInt(0);
+      logger.debug(`Raw delegated mapping result for ${address}:`, result);
+
+      if (typeof result === 'string') {
+        return {
+          delegator: address,
+          microcredits: BigInt(result.replace('u64', ''))
+        };
       }
-      return getBigIntFromString((result as string).replace('u64', ''));
+
+      logger.warn(`Unexpected delegated mapping format for ${address}:`, result);
+      return null;
     } catch (error) {
       logger.error(`Error fetching delegated mapping for ${address}:`, error);
-      throw error;
+      return null;
     }
   }
 
   async getTotalNetworkStake(): Promise<bigint> {
     try {
       const committee = await this.getLatestCommittee();
-      let totalStake = BigInt(0);
-      for (const address of Object.keys(committee)) {
-        const delegated = await this.getDelegatedMapping(address);
-        totalStake += delegated;
-      }
-      return totalStake;
+      return BigInt(committee.total_stake);
     } catch (error) {
       logger.error('Error calculating total network stake:', error);
       throw error;

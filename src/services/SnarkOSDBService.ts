@@ -33,12 +33,26 @@ export class SnarkOSDBService {
   async checkDatabaseStructure(): Promise<boolean> {
     const client = await this.pool.connect();
     try {
-      const tables = ['blocks', 'committee_members', 'committee_participation', 'batches', 'uptime_snapshots'];
+      const tables = [
+        'blocks',
+        'committee_members',
+        'committee_participation',
+        'batches',
+        'uptime_snapshots',
+        'validator_rewards',
+        'delegator_rewards',
+        'delegations',
+        'validator_status'
+      ];
       const indexes = [
         'idx_blocks_round',
         'idx_committee_participation_round',
         'idx_batches_round',
-        'idx_uptime_snapshots_end_round'
+        'idx_uptime_snapshots_end_round',
+        'idx_validator_rewards_address_height',
+        'idx_delegator_rewards_address_height',
+        'idx_delegations_validator_address',
+        'idx_validator_status_is_active'
       ];
 
       for (const table of tables) {
@@ -86,16 +100,11 @@ export class SnarkOSDBService {
           previous_hash TEXT NOT NULL,
           round BIGINT NOT NULL,
           timestamp BIGINT NOT NULL,
-          transactions_count INTEGER NOT NULL
+          transactions_count INTEGER NOT NULL,
+          block_reward NUMERIC
         );
 
-        CREATE TABLE IF NOT EXISTS validator_status (
-          address TEXT PRIMARY KEY,
-          last_active_round BIGINT,
-          consecutive_inactive_rounds INT DEFAULT 0,
-          is_active BOOLEAN DEFAULT true,
-          last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
+        CREATE INDEX IF NOT EXISTS idx_blocks_round ON blocks(round);
 
         CREATE TABLE IF NOT EXISTS committee_members (
           id SERIAL PRIMARY KEY,
@@ -119,6 +128,8 @@ export class SnarkOSDBService {
           UNIQUE (committee_member_id, round)
         );
 
+        CREATE INDEX IF NOT EXISTS idx_committee_participation_round ON committee_participation(round);
+
         CREATE TABLE IF NOT EXISTS batches (
           id SERIAL PRIMARY KEY,
           batch_id TEXT UNIQUE NOT NULL,
@@ -128,6 +139,8 @@ export class SnarkOSDBService {
           committee_id TEXT NOT NULL,
           block_height BIGINT REFERENCES blocks(height)
         );
+
+        CREATE INDEX IF NOT EXISTS idx_batches_round ON batches(round);
 
         CREATE TABLE IF NOT EXISTS uptime_snapshots (
           id SERIAL PRIMARY KEY,
@@ -140,12 +153,49 @@ export class SnarkOSDBService {
           calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
-        CREATE INDEX IF NOT EXISTS idx_blocks_round ON blocks(round);
-        CREATE INDEX IF NOT EXISTS idx_committee_participation_round ON committee_participation(round);
-        CREATE INDEX IF NOT EXISTS idx_batches_round ON batches(round);
         CREATE INDEX IF NOT EXISTS idx_uptime_snapshots_end_round ON uptime_snapshots(end_round);
+
+        CREATE TABLE IF NOT EXISTS validator_rewards (
+          id SERIAL PRIMARY KEY,
+          validator_address TEXT NOT NULL,
+          reward NUMERIC NOT NULL,
+          block_height BIGINT NOT NULL,
+          UNIQUE(validator_address, block_height)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_validator_rewards_address_height ON validator_rewards(validator_address, block_height);
+
+        CREATE TABLE IF NOT EXISTS delegator_rewards (
+          id SERIAL PRIMARY KEY,
+          delegator_address TEXT NOT NULL,
+          reward NUMERIC NOT NULL,
+          block_height BIGINT NOT NULL,
+          UNIQUE(delegator_address, block_height)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_delegator_rewards_address_height ON delegator_rewards(delegator_address, block_height);
+
+        CREATE TABLE IF NOT EXISTS delegations (
+          id SERIAL PRIMARY KEY,
+          delegator_address TEXT NOT NULL,
+          validator_address TEXT NOT NULL,
+          amount NUMERIC NOT NULL,
+          UNIQUE(delegator_address, validator_address)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_delegations_validator_address ON delegations(validator_address);
+
+        CREATE TABLE IF NOT EXISTS validator_status (
+          address TEXT PRIMARY KEY,
+          last_active_round BIGINT,
+          consecutive_inactive_rounds INT DEFAULT 0,
+          is_active BOOLEAN DEFAULT true,
+          last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE INDEX IF NOT EXISTS idx_validator_status_is_active ON validator_status(is_active);
       `);
+
       logger.info('Database schema initialized successfully');
     } catch (error) {
       logger.error('Error initializing database schema:', error);
@@ -154,7 +204,6 @@ export class SnarkOSDBService {
       client.release();
     }
   }
-
   async checkAndUpdateSchema(): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -203,7 +252,8 @@ export class SnarkOSDBService {
           previous_hash: 'TEXT NOT NULL',
           round: 'BIGINT NOT NULL',
           timestamp: 'BIGINT NOT NULL',
-          transactions_count: 'INTEGER NOT NULL'
+          transactions_count: 'INTEGER NOT NULL',
+          block_reward: 'NUMERIC'
         };
       case 'committee_members':
         return {
@@ -298,14 +348,15 @@ export class SnarkOSDBService {
 
   async upsertBlock(block: BlockAttributes): Promise<void> {
     const query = `
-      INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count, block_reward)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (height) DO UPDATE SET
       hash = EXCLUDED.hash,
       previous_hash = EXCLUDED.previous_hash,
       round = EXCLUDED.round,
       timestamp = EXCLUDED.timestamp,
-      transactions_count = EXCLUDED.transactions_count
+      transactions_count = EXCLUDED.transactions_count,
+      block_reward = EXCLUDED.block_reward
     `;
     await this.pool.query(query, [
       block.height,
@@ -313,7 +364,8 @@ export class SnarkOSDBService {
       block.previous_hash,
       block.round,
       block.timestamp,
-      block.transactions_count
+      block.transactions_count,
+      block.block_reward !== undefined ? block.block_reward.toString() : null
     ]);
   }
 
@@ -322,24 +374,7 @@ export class SnarkOSDBService {
     try {
       await client.query('BEGIN');
       for (const block of blocks) {
-        const query = `
-          INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count)
-          VALUES ($1, $2, $3, $4, $5, $6)
-          ON CONFLICT (height) DO UPDATE SET
-          hash = EXCLUDED.hash,
-          previous_hash = EXCLUDED.previous_hash,
-          round = EXCLUDED.round,
-          timestamp = EXCLUDED.timestamp,
-          transactions_count = EXCLUDED.transactions_count
-        `;
-        await client.query(query, [
-          block.height,
-          block.hash,
-          block.previous_hash,
-          block.round,
-          block.timestamp,
-          block.transactions_count
-        ]);
+        await this.upsertBlock(block);
       }
       await client.query('COMMIT');
     } catch (error) {
@@ -774,6 +809,60 @@ export class SnarkOSDBService {
     } finally {
       client.release();
     }
+  }
+
+  async updateBlockReward(blockHash: string, reward: bigint): Promise<void> {
+    const query = 'UPDATE blocks SET block_reward = $1 WHERE hash = $2';
+    await this.pool.query(query, [reward.toString(), blockHash]);
+  }
+
+  async updateValidatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
+    const query = `
+      INSERT INTO validator_rewards (validator_address, reward, block_height)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (validator_address, block_height)
+      DO UPDATE SET reward = EXCLUDED.reward
+    `;
+    await this.pool.query(query, [address, reward.toString(), blockHeight.toString()]);
+  }
+
+  async updateDelegatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
+    const query = `
+      INSERT INTO delegator_rewards (delegator_address, reward, block_height)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (delegator_address, block_height)
+      DO UPDATE SET reward = EXCLUDED.reward
+    `;
+    await this.pool.query(query, [address, reward.toString(), blockHeight.toString()]);
+  }
+
+  async getDelegators(validatorAddress: string): Promise<Array<{ address: string, amount: bigint }>> {
+    const query = 'SELECT delegator_address, amount FROM delegations WHERE validator_address = $1';
+    const result = await this.pool.query(query, [validatorAddress]);
+    return result.rows.map(row => ({
+      address: row.delegator_address,
+      amount: BigInt(row.amount)
+    }));
+  }
+
+  async getValidatorRewardsInRange(validatorAddress: string, startBlock: number, endBlock: number): Promise<bigint> {
+    const query = `
+      SELECT SUM(reward::numeric) as total_rewards
+      FROM validator_rewards
+      WHERE validator_address = $1 AND block_height BETWEEN $2 AND $3
+    `;
+    const result = await this.pool.query(query, [validatorAddress, startBlock, endBlock]);
+    return BigInt(result.rows[0].total_rewards || 0);
+  }
+
+  async getDelegatorRewardsInRange(delegatorAddress: string, startBlock: number, endBlock: number): Promise<bigint> {
+    const query = `
+      SELECT SUM(reward::numeric) as total_rewards
+      FROM delegator_rewards
+      WHERE delegator_address = $1 AND block_height BETWEEN $2 AND $3
+    `;
+    const result = await this.pool.query(query, [delegatorAddress, startBlock, endBlock]);
+    return BigInt(result.rows[0].total_rewards || 0);
   }
 
   async insertOrUpdateCommitteeMember(

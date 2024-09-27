@@ -5,7 +5,7 @@ import ConsensusService from './services/ConsensusService.js';
 import PrimaryService from './services/PrimaryService.js';
 import api from './api/index.js';
 import logger from './utils/logger.js';
-import { SyncService } from './services/SyncService.js';
+// import { SyncService } from './services/SyncService.js';
 import { apiLimiter } from './api/middleware/rateLimiter';
 import { PerformanceMetricsService } from './services/PerformanceMetricsService.js';
 import { AlertService } from './services/AlertService.js';
@@ -27,7 +27,7 @@ const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, 
 const blockService = new BlockService(aleoSDKService, snarkOSDBService);
 const consensusService = new ConsensusService(aleoSDKService);
 const primaryService = new PrimaryService(aleoSDKService);
-const syncService = new SyncService(aleoSDKService, snarkOSDBService, validatorService);
+// const syncService = new SyncService(aleoSDKService, snarkOSDBService, validatorService);
 const alertService = new AlertService(snarkOSDBService, performanceMetricsService);
 const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService);
 

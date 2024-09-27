@@ -4,7 +4,7 @@ import { ValidatorService } from './ValidatorService.js';
 import logger from '../utils/logger.js';
 import { BlockAttributes, APIBlock } from '../database/models/Block.js';
 
-export class SyncService {
+/* export class SyncService {
   constructor(
     private aleoSDKService: AleoSDKService, 
     private snarkOSDBService: SnarkOSDBService,
@@ -120,4 +120,4 @@ export class SyncService {
     }
     return blocks;
   }
-}
+} */
