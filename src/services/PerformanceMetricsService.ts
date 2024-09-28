@@ -199,4 +199,75 @@ export class PerformanceMetricsService {
     this.cacheService.set(cacheKey, result);
     return result;
   }
+
+  async updateUptimes(): Promise<void> {
+    try {
+      const validators = await this.snarkOSDBService.getActiveValidators();
+      const currentRound = await this.aleoSDKService.getCurrentRound();
+
+      logger.info(`Uptime güncelleme başladı. Aktif validator sayısı: ${validators.length}, Mevcut tur: ${currentRound}`);
+
+      for (const validator of validators) {
+        await this.calculateAndUpdateUptime(validator, currentRound);
+      }
+
+      logger.info('Uptime güncelleme tamamlandı.');
+    } catch (error) {
+      logger.error('Uptime güncelleme hatası:', error);
+      throw error;
+    }
+  }
+
+  private async calculateAndUpdateUptime(validatorAddress: string, currentRound: bigint): Promise<void> {
+    try {
+      const calculationRoundSpan = BigInt(config.uptime.calculationRoundSpan);
+
+      const earliestRound = await this.snarkOSDBService.getEarliestValidatorRound(validatorAddress);
+      const startRoundCandidate = currentRound > calculationRoundSpan ? currentRound - calculationRoundSpan : BigInt(0);
+      const startRound = earliestRound ? (earliestRound > startRoundCandidate ? earliestRound : startRoundCandidate) : startRoundCandidate;
+
+      if (startRound >= currentRound) {
+        logger.warn(`Validator ${validatorAddress} için startRound (${startRound}) currentRound'dan (${currentRound}) büyük veya eşit.`);
+        return;
+      }
+
+      const participation = await this.snarkOSDBService.getValidatorParticipation(validatorAddress, startRound, currentRound);
+
+      const totalRounds = currentRound - startRound;
+      const participatedRounds = BigInt(participation.length);
+
+      if (totalRounds === BigInt(0)) {
+        logger.warn(`Validator ${validatorAddress} için totalRounds değeri sıfır.`);
+        return;
+      }
+
+      const uptimePercentage = Number(participatedRounds * BigInt(100)) / Number(totalRounds);
+
+      await this.snarkOSDBService.updateValidatorUptime(
+        validatorAddress,
+        startRound,
+        currentRound,
+        totalRounds,
+        participatedRounds,
+        uptimePercentage
+      );
+
+      logger.info(`Validator ${validatorAddress} için uptime güncellendi. Uptime: ${uptimePercentage.toFixed(2)}%`);
+    } catch (error) {
+      logger.error(`Validator ${validatorAddress} için uptime hesaplama hatası:`, error);
+      throw error;
+    }
+  }
+
+  private async getLastCalculatedRound(validatorAddress: string): Promise<bigint> {
+    const lastSnapshot = await this.snarkOSDBService.getLastUptimeSnapshot(validatorAddress);
+
+    if (lastSnapshot) {
+      return lastSnapshot.end_round + BigInt(1);
+    } else {
+      // Eğer önceki bir hesaplama yoksa, en eski turu alın
+      const earliestRound = await this.snarkOSDBService.getEarliestValidatorRound(validatorAddress);
+      return earliestRound ? earliestRound : BigInt(0);
+    }
+  }
 }

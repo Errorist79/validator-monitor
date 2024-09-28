@@ -55,6 +55,8 @@ export class AleoSDKService {
       
       const { error } = validateBlock(convertedBlock);
       if (error) {
+        logger.error('Block validation error:', error);
+        logger.error('Invalid block:', JSON.stringify(convertedBlock, null, 2));
         throw new ValidationError(`Invalid block structure: ${error.message}`);
       }
       
@@ -70,17 +72,20 @@ export class AleoSDKService {
     }
   }
 
-  public convertToBlockAttributes(apiBlock: APIBlock): BlockAttributes {
-    const blockReward = apiBlock.ratifications.find(r => r.type === 'block_reward');
-    return {
-      height: parseInt(apiBlock.header.metadata.height),
-      hash: apiBlock.block_hash,
-      previous_hash: apiBlock.previous_hash,
-      round: parseInt(apiBlock.header.metadata.round),
-      timestamp: Number(apiBlock.header.metadata.timestamp),
-      transactions_count: apiBlock.transactions.length,
-      block_reward: blockReward && blockReward.amount !== undefined ? Number(blockReward.amount) : undefined,
-    };
+  async getCurrentRound(): Promise<bigint> {
+    try {
+      logger.debug('Fetching current round');
+      const latestBlock = await this.getLatestBlock();
+      if (!latestBlock) {
+        throw new Error('Unable to fetch latest block');
+      }
+      const currentRound = BigInt(latestBlock.round);
+      logger.debug(`Current round fetched: ${currentRound}`);
+      return currentRound;
+    } catch (error) {
+      logger.error('Error fetching current round:', error);
+      throw error;
+    }
   }
 
   async getLatestCommittee(): Promise<LatestCommittee> {
@@ -260,7 +265,7 @@ export class AleoSDKService {
     try {
       logger.debug(`Fetching block at height ${height}...`);
       const block = await this.network.getBlock(height);
-      logger.debug(`Raw API response: ${JSON.stringify(block)}`);
+      // logger.debug(`Raw API response: ${JSON.stringify(block)}`);
       return block;
     } catch (error) {
       logger.error(`Error while fetching block at height ${height}:`, error);
@@ -348,6 +353,7 @@ export class AleoSDKService {
 
   private convertToAPIBlock(rawBlock: any): APIBlock {
     return {
+      height: rawBlock.header.metadata.height,
       block_hash: rawBlock.block_hash,
       previous_hash: rawBlock.previous_hash,
       header: {
@@ -367,7 +373,7 @@ export class AleoSDKService {
           proof_target: rawBlock.header.metadata.proof_target,
           last_coinbase_target: rawBlock.header.metadata.last_coinbase_target,
           last_coinbase_timestamp: rawBlock.header.metadata.last_coinbase_timestamp,
-          timestamp: rawBlock.header.metadata.timestamp
+          timestamp: Number(rawBlock.header.metadata.timestamp)
         }
       },
       authority: rawBlock.authority,
@@ -375,6 +381,18 @@ export class AleoSDKService {
       solutions: rawBlock.solutions,
       transactions: rawBlock.transactions,
       aborted_transaction_ids: rawBlock.aborted_transaction_ids
+    };
+  }
+
+  public convertToBlockAttributes(apiBlock: APIBlock): BlockAttributes {
+    return {
+      height: parseInt(apiBlock.header.metadata.height),
+      hash: apiBlock.block_hash,
+      previous_hash: apiBlock.previous_hash,
+      round: parseInt(apiBlock.header.metadata.round),
+      timestamp: Number(apiBlock.header.metadata.timestamp), // Unix timestamp'i number olarak bırakıyoruz
+      transactions_count: apiBlock.transactions.length,
+      block_reward: apiBlock.ratifications.find(r => r.type === 'block_reward')?.amount ? Number(apiBlock.ratifications.find(r => r.type === 'block_reward')?.amount) : undefined
     };
   }
 

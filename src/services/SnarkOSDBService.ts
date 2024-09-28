@@ -311,15 +311,10 @@ export class SnarkOSDBService {
   }
 
   async getValidators(): Promise<any[]> {
-    try {
-      const result = await this.pool.query('SELECT * FROM committee_members');
-      return result.rows;
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        throw new Error(`SnarkOS DB getValidators error: ${error.message}`);
-      }
-      throw new Error('SnarkOS DB getValidators error: An unknown error occurred');
-    }
+    const query = 'SELECT * FROM committee_members';
+    const result = await this.pool.query(query);
+    logger.debug(`Retrieved ${result.rows.length} validators from the database`);
+    return result.rows;
   }
 
   async getBlocksByValidator(validatorAddress: string, timeFrame: number): Promise<any[]> {
@@ -649,38 +644,54 @@ export class SnarkOSDBService {
     return parseInt(result.rows[0].count, 10);
   }
 
-  async updateValidatorUptime(validatorAddress: string, uptime: number, lastUptimeUpdate: Date): Promise<void> {
-    try {
-      await this.pool.query(
-        `UPDATE validators 
-         SET uptime = $1, last_uptime_update = $2
-         WHERE address = $3`,
-        [uptime, lastUptimeUpdate, validatorAddress]
-      );
-    } catch (error) {
-      logger.error(`Error updating uptime for validator ${validatorAddress}:`, error);
-      throw error;
-    }
+  async updateValidatorUptime(
+    address: string,
+    startRound: bigint,
+    endRound: bigint,
+    totalRounds: bigint,
+    participatedRounds: bigint,
+    uptimePercentage: number
+  ): Promise<void> {
+    const query = `
+      INSERT INTO uptime_snapshots 
+      (committee_member_id, start_round, end_round, total_rounds, participated_rounds, uptime_percentage, calculated_at)
+      VALUES (
+        (SELECT id FROM committee_members WHERE address = $1),
+        $2, $3, $4, $5, $6, CURRENT_TIMESTAMP
+      )
+    `;
+    await this.pool.query(query, [
+      address,
+      startRound.toString(),
+      endRound.toString(),
+      totalRounds.toString(),
+      participatedRounds.toString(),
+      uptimePercentage
+    ]);
   }
 
-  async updateCommitteeMap(committee: Record<string, [bigint, boolean, bigint]>): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      for (const [address, [stake, isOpen, commission]] of Object.entries(committee)) {
-        await client.query(
-          'INSERT INTO mapping_committee_history (address, stake, is_open, commission, timestamp) VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT (address) DO UPDATE SET stake = $2, is_open = $3, commission = $4, timestamp = NOW()',
-          [address, stake.toString(), isOpen, commission.toString()]
-        );
-      }
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      logger.error('Error updating committee map:', error);
-      throw error;
-    } finally {
-      client.release();
-    }
+  async getValidatorParticipation(validatorAddress: string, startRound: bigint, endRound: bigint): Promise<any[]> {
+    const query = `
+      SELECT cp.* FROM committee_participation cp
+      INNER JOIN committee_members cm ON cp.committee_member_id = cm.id
+      WHERE cm.address = $1 AND cp.round >= $2 AND cp.round <= $3
+    `;
+    const result = await this.pool.query(query, [validatorAddress, startRound.toString(), endRound.toString()]);
+    
+    logger.debug(`Validator ${validatorAddress} participation count between rounds ${startRound} and ${endRound}: ${result.rows.length}`);
+  
+    return result.rows;
+  }
+
+  async getLastUptimeSnapshot(address: string): Promise<any | null> {
+    const query = `
+      SELECT * FROM uptime_snapshots
+      WHERE committee_member_id = (SELECT id FROM committee_members WHERE address = $1)
+      ORDER BY end_round DESC
+      LIMIT 1
+    `;
+    const result = await this.pool.query(query, [address]);
+    return result.rows[0] || null;
   }
 
   async updateBondedMap(bondedMap: Map<string, bigint>): Promise<void> {
@@ -758,23 +769,20 @@ export class SnarkOSDBService {
     }
   }
 
-  async getValidatorBatches(validatorAddress: string, startTimestamp: number, endTimestamp: number): Promise<Batch[]> {
-    const client = await this.pool.connect();
-    try {
-      const result = await client.query(
-        `SELECT id, batch_id, author, round, timestamp, committee_id, block_height
-         FROM batches
-         WHERE author = $1 AND timestamp BETWEEN $2 AND $3
-         ORDER BY timestamp`,
-        [validatorAddress, startTimestamp, endTimestamp]
-      );
-      return result.rows;
-    } catch (error) {
-      logger.error('Error getting validator batches:', error);
-      throw error;
-    } finally {
-      client.release();
-    }
+  async getValidatorBatches(validatorAddress: string, startTime: number, endTime: number): Promise<any[]> {
+    const query = `
+      SELECT * FROM batches 
+      WHERE author = $1 AND timestamp >= $2 AND timestamp <= $3
+    `;
+    
+    // Parametreleri kontrol etmek için log ekleyelim
+    logger.debug(`Validator ${validatorAddress} için ${startTime} ile ${endTime} arasındaki batch'ler sorgulanıyor`);
+  
+    const result = await this.pool.query(query, [validatorAddress, startTime, endTime]);
+  
+    logger.debug(`Validator ${validatorAddress} için bulunan batch sayısı: ${result.rows.length}`);
+  
+    return result.rows;
   }
 
   async insertUptimeSnapshot(snapshot: Omit<UptimeSnapshotAttributes, 'id'>): Promise<void> {
@@ -958,7 +966,13 @@ export class SnarkOSDBService {
         END,
         last_updated = CURRENT_TIMESTAMP
     `;
-    await this.pool.query(query, [address, currentRound.toString(), 0, isActive]);
+    try {
+      await this.pool.query(query, [address, currentRound.toString(), 0, isActive]);
+      logger.debug(`Updated status for validator ${address}, isActive: ${isActive}`);
+    } catch (error) {
+      logger.error(`Error updating validator status for ${address}:`, error);
+      throw error;
+    }
   }
 
   async getActiveValidators(): Promise<string[]> {
@@ -977,6 +991,16 @@ export class SnarkOSDBService {
       }
       throw new Error('SnarkOS DB getValidatorByAddress error: An unknown error occurred');
     }
+  }
+
+  async getEarliestValidatorRound(validatorAddress: string): Promise<bigint | null> {
+    const query = `
+      SELECT MIN(round) as min_round FROM committee_participation cp
+      JOIN committee_members cm ON cp.committee_member_id = cm.id
+      WHERE cm.address = $1
+    `;
+    const result = await this.pool.query(query, [validatorAddress]);
+    return result.rows[0].min_round ? BigInt(result.rows[0].min_round) : null;
   }
 }
 

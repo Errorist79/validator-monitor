@@ -21,7 +21,7 @@ const config = {
         calculationBlockRange: parseInt(process.env.UPTIME_CALCULATION_BLOCK_RANGE || '100', 10),
         calculationTimeFrame: 86400, // 24 saat
         averageBatchInterval: 5, // saniye cinsinden ortalama batch aralığı
-        // Diğer ayarlar...
+        calculationRoundSpan: parseInt(process.env.CALCULATION_ROUND_SPAN || '500', 10),
     },
     redis: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',

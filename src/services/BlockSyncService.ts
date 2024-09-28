@@ -5,13 +5,22 @@ import { APIBlock } from '../database/models/Block.js';
 import { BatchAttributes } from '../database/models/Batch.js';
 import { sleep } from '../utils/helpers.js';
 import { config } from '../config/index.js';
-
+import { CommitteeMapping, BondedMapping, DelegatedMapping } from '../database/models/Mapping.js';
 export class BlockSyncService {
   private readonly SYNC_INTERVAL = 5000; // 5 saniye
   private readonly BATCH_SIZE = 50;
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_DELAY = 3000; // 3 saniye
   private readonly SYNC_START_BLOCK: number;
+
+  private mappingCache: Map<string, {
+    committeeMapping: CommitteeMapping;
+    bondedMapping: BondedMapping;
+    delegatedMapping: DelegatedMapping;
+    lastUpdated: number;
+  }> = new Map();
+
+  private readonly MAPPING_UPDATE_INTERVAL = 2 * 60 * 60 * 1000; // 2 saat
 
   constructor(
     private aleoSDKService: AleoSDKService,
@@ -98,40 +107,61 @@ export class BlockSyncService {
     }
   }
 
+  private async getMappings(author: string): Promise<{
+    committeeMapping: CommitteeMapping;
+    bondedMapping: BondedMapping;
+    delegatedMapping: DelegatedMapping;
+  }> {
+    const cachedData = this.mappingCache.get(author);
+    const now = Date.now();
+
+    if (cachedData && (now - cachedData.lastUpdated) < this.MAPPING_UPDATE_INTERVAL) {
+      return {
+        committeeMapping: cachedData.committeeMapping,
+        bondedMapping: cachedData.bondedMapping,
+        delegatedMapping: cachedData.delegatedMapping
+      };
+    }
+
+    const [committeeMapping, bondedMapping, delegatedMapping] = await Promise.all([
+      this.aleoSDKService.getCommitteeMapping(author),
+      this.aleoSDKService.getBondedMapping(author),
+      this.aleoSDKService.getDelegatedMapping(author)
+    ]);
+    
+    if (!committeeMapping || !bondedMapping || !delegatedMapping) {
+      throw new Error(`Failed to retrieve mapping for author ${author}`);
+    }
+    
+    this.mappingCache.set(author, {
+      committeeMapping,
+      bondedMapping,
+      delegatedMapping,
+      lastUpdated: now
+    });
+    
+    return { committeeMapping, bondedMapping, delegatedMapping };
+  }
+
   private async processBatchesAndParticipation(block: APIBlock): Promise<void> {
     try {
+      const blockHeight = parseInt(block.header.metadata.height);
+
       for (const roundKey in block.authority.subdag.subdag) {
         const batches = block.authority.subdag.subdag[roundKey];
         for (const batch of batches) {
           const author = batch.batch_header.author;
-          const blockHeight = parseInt(block.header.metadata.height);
           
-          logger.debug(`Processing batch for author ${author} at block ${blockHeight}`);
-  
-          const committeeMapping = await this.aleoSDKService.getCommitteeMapping(author);
-          const bondedMapping = await this.aleoSDKService.getBondedMapping(author);
-          const delegatedMapping = await this.aleoSDKService.getDelegatedMapping(author);
-  
-          logger.debug(`Mappings for author ${author}:`, {
-            committeeMapping,
-            bondedMapping,
-            delegatedMapping
-          });
-  
-          if (!committeeMapping || !bondedMapping) {
-            logger.warn(`Missing mapping data for author ${author} at block ${blockHeight}`);
+          const mappings = await this.getMappings(author);
+
+          if (!mappings.committeeMapping || !mappings.bondedMapping) {
+            logger.warn(`${author} için eksik eşleme verisi, blok yüksekliği ${blockHeight}`);
             continue;
           }
-  
+
+          const { committeeMapping, bondedMapping, delegatedMapping } = mappings;
           const totalStake = bondedMapping.microcredits + (delegatedMapping ? delegatedMapping.microcredits : BigInt(0));
-  
-          logger.debug(`Inserting or updating committee member ${author}`, {
-            blockHeight,
-            totalStake: totalStake.toString(),
-            isOpen: committeeMapping.is_open,
-            commission: committeeMapping.commission
-          });
-  
+
           await this.snarkOSDBService.insertOrUpdateCommitteeMember(
             author,
             blockHeight,
@@ -139,14 +169,15 @@ export class BlockSyncService {
             committeeMapping.is_open,
             BigInt(committeeMapping.commission)
           );
-  
+
           await this.saveBatchInfo(batch, blockHeight);
           await this.saveCommitteeParticipation(author, batch.batch_header.committee_id, parseInt(roundKey), blockHeight);
         }
       }
-      logger.info(`Processed batches and participation for block ${block.block_hash}`);
+
+      logger.info(`${block.height} bloğu için toplu işlemler ve katılım işlendi`);
     } catch (error) {
-      logger.error(`Error processing batches and participation for block ${block.block_hash}:`, error);
+      logger.error(`${block.block_hash} bloğu için toplu işlemler ve katılım işlenirken hata oluştu:`, error);
       throw error;
     }
   }

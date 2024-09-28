@@ -16,9 +16,12 @@ export class ValidatorService {
       const validators = await this.snarkOSDBService.getValidators();
       const currentRound = BigInt(latestCommittee.starting_round);
 
+      logger.info(`Retrieved ${validators.length} validators for status update`);
+
       for (const validator of validators) {
         const isActive = await this.checkValidatorActivity(validator.address);
-        await this.snarkOSDBService.updateValidatorStatus(validator.address, BigInt(currentRound), isActive);
+        logger.debug(`Validator ${validator.address} isActive: ${isActive}`);
+        await this.snarkOSDBService.updateValidatorStatus(validator.address, currentRound, isActive);
       }
 
       logger.info('Updated validator statuses successfully');
@@ -29,11 +32,19 @@ export class ValidatorService {
   }
 
   private async checkValidatorActivity(validatorAddress: string): Promise<boolean> {
-    // Bu metodu, validatörün aktif olup olmadığını kontrol etmek için uygun mantıkla doldurun
-    // Örneğin, son X blokta batch üretip üretmediğini kontrol edebilirsiniz
-    // Şimdilik basit bir örnek:
-    const recentBatches = await this.snarkOSDBService.getValidatorBatches(validatorAddress, Date.now() - 24 * 60 * 60 * 1000, Date.now());
+    // ... mevcut kodlar ...
+
+    // Zaman damgalarını saniyeye çeviriyoruz
+    const startTime = Math.floor(Date.now() / 1000) - 1 * 60 * 60; // Son 1 saat (saniye cinsinden)
+    const endTime = Math.floor(Date.now() / 1000); // Şu an (saniye cinsinden)
+
+    const recentBatches = await this.snarkOSDBService.getValidatorBatches(validatorAddress, startTime, endTime);
+
+    logger.debug(`Validator ${validatorAddress} son ${startTime} ile ${endTime} arasında ${recentBatches.length} batch işlemine sahip`);
+
     return recentBatches.length > 0;
+
+    // ... mevcut kodlar ...
   }
 
   async getValidator(address: string): Promise<any> {
@@ -85,7 +96,7 @@ export class ValidatorService {
     }
   }
 
-  async updateValidatorUptime(validatorAddress: string): Promise<void> {
+  /* async updateValidatorUptime(validatorAddress: string): Promise<void> {
     try {
       const uptime = await this.performanceMetricsService.calculateUptime(validatorAddress);
       const lastUptimeUpdate = new Date();
@@ -111,7 +122,7 @@ export class ValidatorService {
     } catch (error) {
       logger.error('Error updating uptime for all validators:', error);
     }
-  }
+  } */
 
   async getAllValidators(): Promise<any[]> {
     return this.snarkOSDBService.getValidators();

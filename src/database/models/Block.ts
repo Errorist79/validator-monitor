@@ -116,6 +116,7 @@ export interface APITransaction {
 }
 
 export interface APIBlock {
+  height: number;
   block_hash: string;
   previous_hash: string;
   header: APIBlockHeader;
@@ -128,6 +129,7 @@ export interface APIBlock {
 
 export function convertBlockAttributesToAPIBlock(blockAttributes: BlockAttributes): APIBlock {
   return {
+    height: blockAttributes.height,
     block_hash: blockAttributes.hash,
     previous_hash: blockAttributes.previous_hash,
     header: {

@@ -91,25 +91,25 @@ async function main() {
     logger.info('Starting block synchronization process...');
     await blockSyncService.startSyncProcess();
 
-    // Her 1 dakikada bir çalışacak cron job
+    // Periyodik görevlerin başlatılması
     cron.schedule('* * * * *', async () => {
       try {
         logger.info('Starting periodic tasks...');
 
+        // En son blokların senkronizasyonu
         logger.info('Synchronizing latest blocks...');
         await blockSyncService.syncLatestBlocks();
         logger.info('Block synchronization completed');
 
+        // Validator durumlarının güncellenmesi
         logger.info('Updating validator statuses...');
         await validatorService.updateValidatorStatuses();
         logger.info('Validator statuses updated');
 
+        // Uptime hesaplaması
         logger.info('Calculating uptime for validators...');
-        const validators = await snarkOSDBService.getValidators();
-        for (const validator of validators) {
-          await performanceMetricsService.calculateUptime(validator.address);
-        }
-        logger.info('Uptime calculation completed for all validators');
+        await performanceMetricsService.updateUptimes();
+        logger.info('Uptime calculation completed');
 
         logger.info('Calculating and distributing rewards...');
         await rewardsService.calculateAndDistributeRewards();
@@ -288,3 +288,10 @@ app.get('/api/alerts/:address', async (req, res) => {
     res.status(500).json({ error: 'Failed to check alerts' });
   }
 });
+
+// Her saat başı uptime'ları güncelle
+setInterval(() => {
+  performanceMetricsService.updateUptimes().catch(error => {
+    console.error('Uptime güncelleme hatası:', error);
+  });
+}, 60 * 60 * 1000); // 1 saat
