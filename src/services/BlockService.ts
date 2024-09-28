@@ -72,7 +72,7 @@ export class BlockService {
       hash: apiBlock.block_hash,
       previous_hash: apiBlock.previous_hash,
       round: parseInt(apiBlock.header.metadata.round),
-      timestamp: parseInt(apiBlock.header.metadata.timestamp),
+      timestamp: Number(apiBlock.header.metadata.timestamp),
       transactions_count: apiBlock.transactions.length,
       block_reward: apiBlock.ratifications.find(r => r.type === 'block_reward')?.amount ? Number(apiBlock.ratifications.find(r => r.type === 'block_reward')?.amount) : 0
     };

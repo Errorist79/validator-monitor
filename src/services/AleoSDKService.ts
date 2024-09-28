@@ -9,6 +9,26 @@ import { getBigIntFromString } from '../utils/helpers.js';
 import { BondedMapping, CommitteeMapping, LatestCommittee, DelegatedMapping } from '../database/models/Mapping.js';
 import logger from '../utils/logger.js';
 
+// Özel tip tanımlamaları
+type CommitteeResult = {
+  is_open: boolean;
+  commission: string | number;
+};
+
+type BondedResult = {
+  validator: string;
+  microcredits: string | number;
+};
+
+type MappingResult = CommitteeResult | BondedResult | string;
+
+function isCommitteeResult(result: MappingResult): result is CommitteeResult {
+  return typeof result === 'object' && 'is_open' in result && 'commission' in result;
+}
+
+function isBondedResult(result: MappingResult): result is BondedResult {
+  return typeof result === 'object' && 'validator' in result && 'microcredits' in result;
+}
 export class AleoSDKService {
   private network: AleoNetworkClient;
 
@@ -57,7 +77,7 @@ export class AleoSDKService {
       hash: apiBlock.block_hash,
       previous_hash: apiBlock.previous_hash,
       round: parseInt(apiBlock.header.metadata.round),
-      timestamp: parseInt(apiBlock.header.metadata.timestamp),
+      timestamp: Number(apiBlock.header.metadata.timestamp),
       transactions_count: apiBlock.transactions.length,
       block_reward: blockReward && blockReward.amount !== undefined ? Number(blockReward.amount) : undefined,
     };
@@ -99,40 +119,52 @@ export class AleoSDKService {
 
   async getCommitteeMapping(address: string): Promise<CommitteeMapping | null> {
     try {
-      const result = await this.network.getProgramMappingValue("credits.aleo", "committee", address);
-      logger.debug(`Raw committee mapping result for ${address}:`, result);
+      const rawResult = await this.network.getProgramMappingValue("credits.aleo", "committee", address);
+      const result = this.parseRawResult(rawResult);
+      logger.debug(`Raw committee mapping result for (${address}):`, JSON.stringify(result, null, 2));
 
-      if (typeof result === 'object' && result !== null && 'is_open' in result && 'commission' in result) {
-        return {
-          is_open: result.is_open === 'true',
-          commission: parseInt(String(result.commission).replace('u8', ''))
-        };
+      if (result === null || result === undefined) {
+        logger.warn(`${address} için komite eşlemesi bulunamadı`);
+        return null;
       }
 
-      logger.warn(`Unexpected committee mapping format for ${address}:`, result);
+      if (typeof result === 'object' && result !== null) {
+        const isOpen = 'is_open' in result ? Boolean(result.is_open) : false;
+        const commission = 'commission' in result ? Number(result.commission) : 0;
+
+        return { is_open: isOpen, commission };
+      }
+
+      logger.warn(`${address} için beklenmeyen komite eşleme formatı:`, JSON.stringify(result, null, 2));
       return null;
     } catch (error) {
-      logger.error(`Error fetching committee mapping for ${address}:`, error);
+      logger.error(`${address} için komite eşlemesi alınırken hata oluştu:`, error);
       return null;
     }
   }
 
   async getBondedMapping(address: string): Promise<BondedMapping | null> {
     try {
-      const result = await this.network.getProgramMappingValue("credits.aleo", "bonded", address);
-      logger.debug(`Raw bonded mapping result for ${address}:`, result);
+      const rawResult = await this.network.getProgramMappingValue("credits.aleo", "bonded", address);
+      const result = this.parseRawResult(rawResult);
+      logger.debug(`Ham bağlı eşleme sonucu (${address}):`, JSON.stringify(result, null, 2));
 
-      if (typeof result === 'object' && result !== null && 'validator' in result && 'microcredits' in result) {
-        return {
-          validator: String(result.validator),
-          microcredits: BigInt(String(result.microcredits).replace('u64', ''))
-        };
+      if (result === null || result === undefined) {
+        logger.warn(`${address} için bağlı eşleme bulunamadı`);
+        return null;
       }
 
-      logger.warn(`Unexpected bonded mapping format for ${address}:`, result);
+      if (typeof result === 'object' && result !== null) {
+        const validator = 'validator' in result ? String(result.validator) : address;
+        const microcredits = 'microcredits' in result ? BigInt(result.microcredits) : BigInt(0);
+
+        return { validator, microcredits };
+      }
+
+      logger.warn(`${address} için beklenmeyen bağlı eşleme formatı:`, JSON.stringify(result, null, 2));
       return null;
     } catch (error) {
-      logger.error(`Error fetching bonded mapping for ${address}:`, error);
+      logger.error(`${address} için bağlı eşleme alınırken hata oluştu:`, error);
       return null;
     }
   }
@@ -155,6 +187,50 @@ export class AleoSDKService {
       logger.error(`Error fetching delegated mapping for ${address}:`, error);
       return null;
     }
+  }
+
+  private parseRawResult(rawResult: any): any {
+    if (typeof rawResult !== 'string') {
+      return rawResult;
+    }
+  
+    let cleanedResult = rawResult;
+  
+    try {
+      // Anahtar isimlerini çift tırnak içine al
+      cleanedResult = cleanedResult.replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":');
+  
+      // Dize değerlerini çift tırnak içine al
+      cleanedResult = cleanedResult.replace(/:\s*([a-zA-Z0-9_]+)([,}])/g, ': "$1"$2');
+  
+      // Sayısal değerlerdeki tip eklerini kaldır
+      cleanedResult = cleanedResult.replace(/(\d+)u(8|16|32|64|128)/g, '$1');
+  
+      return JSON.parse(cleanedResult);
+    } catch (error) {
+      logger.error('Error parsing raw result:', error);
+      logger.error('Cleaned result:', cleanedResult);
+      return null; // Ayrıştırma başarısız olursa null döndür
+    }
+  }
+
+  private parseCommission(commission: any): number | null {
+    if (typeof commission === 'number') {
+      return commission;
+    }
+    logger.warn(`Unexpected commission format:`, commission);
+    return null;
+  }
+  
+  private parseMicrocredits(microcredits: any): bigint | null {
+    if (typeof microcredits === 'number') {
+      return BigInt(microcredits);
+    }
+    if (typeof microcredits === 'string') {
+      return BigInt(microcredits);
+    }
+    logger.warn(`Unexpected microcredits format:`, microcredits);
+    return null;
   }
 
   async getTotalNetworkStake(): Promise<bigint> {

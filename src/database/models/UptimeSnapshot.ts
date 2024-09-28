@@ -1,7 +1,7 @@
 import { Model, DataTypes, Sequelize } from 'sequelize';
 
 export interface UptimeSnapshotAttributes {
-  id: number;
+  id?: number;
   committee_member_id: number;
   start_round: number;
   end_round: number;
@@ -20,33 +20,46 @@ export class UptimeSnapshot extends Model<UptimeSnapshotAttributes> implements U
   public participated_rounds!: number;
   public uptime_percentage!: number;
   public calculated_at!: Date;
-}
 
-export const initUptimeSnapshot = (sequelize: Sequelize) => {
-  UptimeSnapshot.init({
-    id: {
-      type: DataTypes.INTEGER,
-      autoIncrement: true,
-      primaryKey: true,
-    },
-    committee_member_id: {
-      type: DataTypes.INTEGER,
-      references: {
-        model: 'CommitteeMember',
-        key: 'id',
+  static initModel(sequelize: Sequelize): void {
+    UptimeSnapshot.init({
+      id: {
+        type: DataTypes.INTEGER,
+        autoIncrement: true,
+        primaryKey: true,
       },
-    },
-    start_round: DataTypes.BIGINT,
-    end_round: DataTypes.BIGINT,
-    total_rounds: DataTypes.INTEGER,
-    participated_rounds: DataTypes.INTEGER,
-    uptime_percentage: DataTypes.FLOAT,
-    calculated_at: DataTypes.DATE,
-  }, {
-    sequelize,
-    modelName: 'UptimeSnapshot',
-    indexes: [
-      { fields: ['committee_member_id', 'end_round'] }
-    ]
-  });
-};
+      committee_member_id: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      start_round: {
+        type: DataTypes.BIGINT,
+        allowNull: false,
+      },
+      end_round: {
+        type: DataTypes.BIGINT,
+        allowNull: false,
+      },
+      total_rounds: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      participated_rounds: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+      },
+      uptime_percentage: {
+        type: DataTypes.DECIMAL(5, 2),
+        allowNull: false,
+      },
+      calculated_at: {
+        type: DataTypes.DATE,
+        allowNull: false,
+      },
+    }, {
+      sequelize,
+      tableName: 'uptime_snapshots',
+      timestamps: false,
+    });
+  }
+}

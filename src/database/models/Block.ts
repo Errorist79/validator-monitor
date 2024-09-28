@@ -20,7 +20,7 @@ export interface APIBlockMetadata {
   proof_target: number;
   last_coinbase_target: number;
   last_coinbase_timestamp: number;
-  timestamp: string;
+  timestamp: number;
 }
 
 export interface APIBlockHeader {
@@ -37,7 +37,7 @@ export interface APIBatchHeader {
   batch_id: string;
   author: string;
   round: string;
-  timestamp: string;
+  timestamp: number;
   committee_id: string;
   transmission_ids: string[];
   previous_certificate_ids: string[];
@@ -126,11 +126,44 @@ export interface APIBlock {
   aborted_transaction_ids: string[];
 }
 
+export function convertBlockAttributesToAPIBlock(blockAttributes: BlockAttributes): APIBlock {
+  return {
+    block_hash: blockAttributes.hash,
+    previous_hash: blockAttributes.previous_hash,
+    header: {
+      previous_state_root: '',
+      transactions_root: '',
+      finalize_root: '',
+      ratifications_root: '',
+      solutions_root: '',
+      subdag_root: '',
+      metadata: {
+        network: 0,
+        round: blockAttributes.round.toString(),
+        height: blockAttributes.height.toString(),
+        cumulative_weight: '0',
+        cumulative_proof_target: 0,
+        coinbase_target: 0,
+        proof_target: 0,
+        last_coinbase_target: 0,
+        last_coinbase_timestamp: 0,
+        timestamp: blockAttributes.timestamp
+      },
+    },
+    authority: { type: '', subdag: { subdag: {} } },
+    ratifications: [],
+    solutions: {},
+    transactions: [],
+    aborted_transaction_ids: [],
+  };
+}
+
 export interface APIRatification {
   type: string;
   amount?: number;
   data?: any; // Spesifik ratification tipine göre değişebilir
 }
+
 export class Block extends Model<BlockAttributes> implements BlockAttributes {
   public height!: number;
   public hash!: string;
@@ -176,7 +209,7 @@ export class Block extends Model<BlockAttributes> implements BlockAttributes {
       hash: apiBlock.block_hash,
       previous_hash: apiBlock.previous_hash,
       round: parseInt(apiBlock.header.metadata.round),
-      timestamp: parseInt(apiBlock.header.metadata.timestamp),
+      timestamp: Number(apiBlock.header.metadata.timestamp),
       transactions_count: apiBlock.transactions.length,
       block_reward: blockReward ? Number(blockReward.amount) : undefined,
     };

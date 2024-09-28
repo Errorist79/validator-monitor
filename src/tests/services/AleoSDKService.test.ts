@@ -2,7 +2,6 @@ import { jest } from '@jest/globals';
 import { AleoNetworkClient } from '@provablehq/sdk';
 import { AleoSDKService } from '../../services/AleoSDKService';
 import { NotFoundError, ValidationError } from '../../utils/errors';
-import { Block } from '../../types/Block';
 
 // Jest'i global olarak tanımlayalım
 declare const describe: any;

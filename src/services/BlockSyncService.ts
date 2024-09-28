@@ -5,7 +5,6 @@ import { APIBlock } from '../database/models/Block.js';
 import { BatchAttributes } from '../database/models/Batch.js';
 import { sleep } from '../utils/helpers.js';
 import { config } from '../config/index.js';
-import { BondedMapping, CommitteeMapping } from '../database/models/Mapping.js';
 
 export class BlockSyncService {
   private readonly SYNC_INTERVAL = 5000; // 5 saniye
@@ -31,7 +30,7 @@ export class BlockSyncService {
     }, this.SYNC_INTERVAL);
   }
 
-  private async syncLatestBlocks(): Promise<void> {
+  public async syncLatestBlocks(): Promise<void> {
     const latestSyncedBlock = await this.getLatestSyncedBlockHeight();
     const latestNetworkBlock = await this.aleoSDKService.getLatestBlockHeight();
 
@@ -82,8 +81,11 @@ export class BlockSyncService {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
-        const blockAttributes = blocks.map(block => this.aleoSDKService.convertToBlockAttributes(block));
-        await this.snarkOSDBService.upsertBlocks(blockAttributes);
+        for (const block of blocks) {
+          const blockAttributes = this.aleoSDKService.convertToBlockAttributes(block);
+          await this.snarkOSDBService.upsertBlock(blockAttributes);
+          await this.processBatchesAndParticipation(block);
+        }
         logger.info(`Synchronized blocks from ${startHeight} to ${endHeight}`);
         return;
       } catch (error) {
@@ -104,54 +106,70 @@ export class BlockSyncService {
           const author = batch.batch_header.author;
           const blockHeight = parseInt(block.header.metadata.height);
           
-          const bondedMapping: BondedMapping | null = await this.aleoSDKService.getBondedMapping(author);
-          const committeeMapping: CommitteeMapping | null = await this.aleoSDKService.getCommitteeMapping(author);
-          
-          if (!bondedMapping || !committeeMapping) {
+          logger.debug(`Processing batch for author ${author} at block ${blockHeight}`);
+  
+          const committeeMapping = await this.aleoSDKService.getCommitteeMapping(author);
+          const bondedMapping = await this.aleoSDKService.getBondedMapping(author);
+          const delegatedMapping = await this.aleoSDKService.getDelegatedMapping(author);
+  
+          logger.debug(`Mappings for author ${author}:`, {
+            committeeMapping,
+            bondedMapping,
+            delegatedMapping
+          });
+  
+          if (!committeeMapping || !bondedMapping) {
             logger.warn(`Missing mapping data for author ${author} at block ${blockHeight}`);
             continue;
           }
-
-          const isOpen = committeeMapping.is_open;
-          const commission = committeeMapping.commission;
-
-          // Delegated stake bilgisini al
-          const delegatedMapping = await this.aleoSDKService.getDelegatedMapping(author);
-          const totalStake = delegatedMapping ? delegatedMapping.microcredits : BigInt(0);
-
-          // Komite üyesini güncelle veya ekle
+  
+          const totalStake = bondedMapping.microcredits + (delegatedMapping ? delegatedMapping.microcredits : BigInt(0));
+  
+          logger.debug(`Inserting or updating committee member ${author}`, {
+            blockHeight,
+            totalStake: totalStake.toString(),
+            isOpen: committeeMapping.is_open,
+            commission: committeeMapping.commission
+          });
+  
           await this.snarkOSDBService.insertOrUpdateCommitteeMember(
             author,
             blockHeight,
             totalStake,
-            isOpen,
-            BigInt(commission)
+            committeeMapping.is_open,
+            BigInt(committeeMapping.commission)
           );
-
-          // Batch'i işle
-          await this.snarkOSDBService.insertBatch({
-            batch_id: batch.batch_header.batch_id,
-            author: author,
-            round: parseInt(roundKey),
-            timestamp: parseInt(batch.batch_header.timestamp),
-            committee_id: batch.batch_header.committee_id,
-            block_height: blockHeight
-          });
-
-          // Komite katılımını kaydet
-          await this.snarkOSDBService.insertCommitteeParticipation({
-            committee_member_address: author,
-            committee_id: batch.batch_header.committee_id,
-            round: parseInt(roundKey),
-            block_height: blockHeight,
-            timestamp: parseInt(batch.batch_header.timestamp)
-          });
+  
+          await this.saveBatchInfo(batch, blockHeight);
+          await this.saveCommitteeParticipation(author, batch.batch_header.committee_id, parseInt(roundKey), blockHeight);
         }
       }
+      logger.info(`Processed batches and participation for block ${block.block_hash}`);
     } catch (error) {
       logger.error(`Error processing batches and participation for block ${block.block_hash}:`, error);
       throw error;
     }
+  }
+
+  private async saveBatchInfo(batch: any, blockHeight: number): Promise<void> {
+    await this.snarkOSDBService.insertBatch({
+      batch_id: batch.batch_header.batch_id,
+      author: batch.batch_header.author,
+      round: parseInt(batch.batch_header.round),
+      timestamp: parseInt(batch.batch_header.timestamp),
+      committee_id: batch.batch_header.committee_id,
+      block_height: blockHeight
+    });
+  }
+
+  private async saveCommitteeParticipation(author: string, committeeId: string, round: number, blockHeight: number): Promise<void> {
+    await this.snarkOSDBService.insertCommitteeParticipation({
+      committee_member_address: author,
+      committee_id: committeeId,
+      round: round,
+      block_height: blockHeight,
+      timestamp: Date.now()
+    });
   }
 
   private async processBlock(apiBlock: APIBlock): Promise<void> {
@@ -178,7 +196,7 @@ export class BlockSyncService {
           batch_id: batch.batch_header.batch_id,
           author: batch.batch_header.author,
           round: parseInt(roundKey),
-          timestamp: parseInt(batch.batch_header.timestamp),
+          timestamp: Number(batch.batch_header.timestamp),
           committee_id: batch.batch_header.committee_id,
           block_height: parseInt(apiBlock.header.metadata.height)
         });

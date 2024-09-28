@@ -9,46 +9,32 @@ export class RewardsService {
     private snarkOSDBService: SnarkOSDBService
   ) {}
 
-  /* async calculateStakeRewards(validatorAddress: string, blockReward: bigint): Promise<bigint> {
+  async calculateAndDistributeRewards(): Promise<void> {
     try {
-      const totalNetworkStake = await this.aleoSDKService.getTotalNetworkStake();
-      const committeeData = await this.aleoSDKService.getCommitteeMapping(validatorAddress);
-      
-      if (!committeeData || !committeeData.isOpen) {
-        return BigInt(0); // Validator komitede değilse veya aktif değilse ödül yok
+      const latestBlock = await this.aleoSDKService.getLatestBlock();
+      if (!latestBlock) {
+        logger.warn('No latest block found for reward calculation');
+        return;
       }
 
-      const bondedData = await this.aleoSDKService.getBondedMapping(validatorAddress);
-      const validatorStake = bondedData ? bondedData.microcredits : BigInt(0);
-      const delegatedAmount = await this.aleoSDKService.getDelegatedMapping(validatorAddress);
-
-      const totalValidatorStake = validatorStake + delegatedAmount;
-
-      // Validator'ın stake'inin ağ üzerindeki toplam stake'in 1/4'ünden fazla olup olmadığını kontrol et
-      const maxAllowedStake = totalNetworkStake / BigInt(4);
-      const effectiveStake = totalValidatorStake > maxAllowedStake ? maxAllowedStake : totalValidatorStake;
-
-      // Minimum gereksinimi kontrol et (10 Milyon)
-      const minimumStake = BigInt(10_000_000) * BigInt(1e9); // 10 milyon ALEO
-      if (effectiveStake < minimumStake) {
-        return BigInt(0);
+      const apiBlock = await this.aleoSDKService.getBlock(latestBlock.height);
+      if (!apiBlock) {
+        logger.warn(`Failed to get API block for height ${latestBlock.height}`);
+        return;
       }
 
-      const reward = (blockReward * effectiveStake) / totalNetworkStake;
-
-      // Komisyon hesaplaması
-      const validatorReward = (reward * BigInt(committeeData.commission)) / BigInt(100);
-      const delegatorReward = reward - validatorReward;
-
-      return validatorReward;
+      await this.calculateStakeRewards(apiBlock);
+      logger.info(`Rewards calculated and distributed for block ${apiBlock.header.metadata.height}`);
     } catch (error) {
-      logger.error(`Error calculating stake rewards for validator ${validatorAddress}:`, error);
+      logger.error('Error in calculateAndDistributeRewards:', error);
       throw error;
     }
-  } */
+  }
 
   async calculateStakeRewards(block: APIBlock): Promise<void> {
     try {
+      logger.debug(`Calculating stake rewards for block ${block.header.metadata.height}`);
+      
       const blockReward = this.getBlockReward(block);
       if (blockReward === null) {
         logger.warn(`No block reward found for block ${block.block_hash}`);
@@ -64,6 +50,8 @@ export class RewardsService {
       const blockHeight = BigInt(block.header.metadata.height);
       const totalStake = this.calculateTotalStake(committee.members);
 
+      logger.debug(`Total stake: ${totalStake}, Block reward: ${blockReward}`);
+
       for (const [address, [stake, isOpen, commission]] of Object.entries(committee.members)) {
         const memberStake = BigInt(stake);
         const memberReward = (memberStake * BigInt(blockReward)) / totalStake;
@@ -72,6 +60,8 @@ export class RewardsService {
         const commissionAmount = (memberReward * commissionRate) / BigInt(100);
         const finalReward = memberReward - commissionAmount;
 
+        logger.debug(`Validator ${address}: Stake: ${memberStake}, Reward: ${finalReward}`);
+
         await this.snarkOSDBService.updateValidatorRewards(address, finalReward, blockHeight);
         
         if (isOpen) {
@@ -79,21 +69,17 @@ export class RewardsService {
         }
       }
 
-      // Block ödülünü blocks tablosuna kaydet
-      await this.snarkOSDBService.upsertBlock({
-        ...this.aleoSDKService.convertToBlockAttributes(block),
-        block_reward: Number(blockReward)
-      });
-
+      await this.snarkOSDBService.updateBlockReward(block.block_hash, BigInt(blockReward));
+      logger.info(`Rewards calculated and distributed for block ${block.header.metadata.height}`);
     } catch (error) {
-      logger.error(`Error calculating stake rewards for block ${block.block_hash}:`, error);
+      logger.error(`Error calculating stake rewards for block ${block.header.metadata.height}:`, error);
       throw error;
     }
   }
 
   private getBlockReward(block: APIBlock): number | null {
-    const blockReward = block.ratifications.find(r => r.type === 'block_reward');
-    return blockReward ? Number(blockReward.amount) : null;
+    const blockReward = block.ratifications.find(r => r.type === 'BlockReward');
+    return blockReward && blockReward.data ? Number(blockReward.data) : null;
   }
 
   private calculateTotalStake(members: Record<string, [number, boolean, number]>): bigint {
@@ -105,9 +91,12 @@ export class RewardsService {
       const delegators = await this.snarkOSDBService.getDelegators(validatorAddress);
       const totalDelegatedStake = delegators.reduce((sum, d) => sum + d.amount, BigInt(0));
 
+      logger.debug(`Distributing rewards for validator ${validatorAddress}: Total delegated stake: ${totalDelegatedStake}, Reward amount: ${rewardAmount}`);
+
       for (const delegator of delegators) {
         const delegatorReward = (delegator.amount * rewardAmount) / totalDelegatedStake;
         await this.snarkOSDBService.updateDelegatorRewards(delegator.address, delegatorReward, blockHeight);
+        logger.debug(`Delegator ${delegator.address} received reward: ${delegatorReward}`);
       }
     } catch (error) {
       logger.error(`Error distributing delegator rewards for validator ${validatorAddress}:`, error);
@@ -117,10 +106,6 @@ export class RewardsService {
 
   async getValidatorRewards(validatorAddress: string, startBlock: number, endBlock: number): Promise<bigint> {
     return this.snarkOSDBService.getValidatorRewardsInRange(validatorAddress, startBlock, endBlock);
-  }
-
-  async getDelegatorRewards(delegatorAddress: string, startBlock: number, endBlock: number): Promise<bigint> {
-    return this.snarkOSDBService.getDelegatorRewardsInRange(delegatorAddress, startBlock, endBlock);
   }
 }
 

@@ -5,6 +5,7 @@ import logger from '../utils/logger.js';
 import { config } from '../config/index.js';
 import { CommitteeParticipation } from '../database/models/CommitteeParticipation.js';
 import { Batch } from '../database/models/Batch.js';
+import { UptimeSnapshotAttributes } from '@/database/models/UptimeSnapshot.js';
 
 export class PerformanceMetricsService {
   private cacheService: CacheService;
@@ -78,13 +79,20 @@ export class PerformanceMetricsService {
         actualBatches += batchesInEntry;
       }
 
-      if (totalExpectedBatches === 0) {
-        logger.info(`No expected batches for validator ${validatorAddress}`);
-        return null;
-      }
-
       const uptime = (actualBatches / totalExpectedBatches) * 100;
-      return Math.min(100, Math.max(0, uptime));
+      const uptimeSnapshot: Omit<UptimeSnapshotAttributes, 'id'> = {
+        committee_member_id: committeeEntries[0].committee_member_id,
+        start_round: committeeEntries[0].round,
+        end_round: committeeEntries[committeeEntries.length - 1].round,
+        total_rounds: committeeEntries.length,
+        participated_rounds: actualBatches,
+        uptime_percentage: uptime,
+        calculated_at: new Date()
+      };
+      await this.snarkOSDBService.insertUptimeSnapshot(uptimeSnapshot);
+
+      logger.info(`Calculated uptime for validator ${validatorAddress}: ${uptime.toFixed(2)}%`);
+      return uptime;
     } catch (error) {
       logger.error(`Error calculating uptime for validator ${validatorAddress}:`, error);
       throw error;

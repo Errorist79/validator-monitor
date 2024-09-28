@@ -4,7 +4,7 @@ import { Block, BlockAttributes } from '../database/models/Block.js';
 import { CommitteeMember } from '../database/models/CommitteeMember.js';
 import { CommitteeParticipation } from '../database/models/CommitteeParticipation.js';
 import { Batch } from '../database/models/Batch.js';
-import { UptimeSnapshot } from '../database/models/UptimeSnapshot.js';
+import { UptimeSnapshot, UptimeSnapshotAttributes} from '../database/models/UptimeSnapshot.js';
 import pkg from 'pg';
 const { Pool } = pkg;
 
@@ -777,13 +777,13 @@ export class SnarkOSDBService {
     }
   }
 
-  async insertUptimeSnapshot(snapshot: Omit<UptimeSnapshot, 'id' | 'calculated_at'>): Promise<void> {
+  async insertUptimeSnapshot(snapshot: Omit<UptimeSnapshotAttributes, 'id'>): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query(
-        `INSERT INTO uptime_snapshots (committee_member_id, start_round, end_round, total_rounds, participated_rounds, uptime_percentage)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [snapshot.committee_member_id, snapshot.start_round, snapshot.end_round, snapshot.total_rounds, snapshot.participated_rounds, snapshot.uptime_percentage]
+        `INSERT INTO uptime_snapshots (committee_member_id, start_round, end_round, total_rounds, participated_rounds, uptime_percentage, calculated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [snapshot.committee_member_id, snapshot.start_round, snapshot.end_round, snapshot.total_rounds, snapshot.participated_rounds, snapshot.uptime_percentage, snapshot.calculated_at]
       );
     } catch (error) {
       logger.error('Error inserting uptime snapshot:', error);
@@ -868,21 +868,21 @@ export class SnarkOSDBService {
   async insertOrUpdateCommitteeMember(
     address: string, 
     blockHeight: number, 
-    stake: bigint, 
+    total_stake: bigint, 
     isOpen: boolean, 
     commission: bigint
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
       const result = await client.query(
-        `INSERT INTO committee_members (address, first_seen_block, last_seen_block, stake, is_open, commission)
+        `INSERT INTO committee_members (address, first_seen_block, last_seen_block, total_stake, is_open, commission)
          VALUES ($1, $2, $2, $3, $4, $5)
          ON CONFLICT (address) DO UPDATE SET 
          last_seen_block = $2,
-         stake = $3,
+         total_stake = $3,
          is_open = $4,
          commission = $5`,
-        [address, blockHeight, stake.toString(), isOpen, commission.toString()]
+        [address, blockHeight, total_stake.toString(), isOpen, commission.toString()]
       );
     } catch (error) {
       logger.error('Error inserting or updating committee member:', error);

@@ -5,7 +5,6 @@ import ConsensusService from './services/ConsensusService.js';
 import PrimaryService from './services/PrimaryService.js';
 import api from './api/index.js';
 import logger from './utils/logger.js';
-// import { SyncService } from './services/SyncService.js';
 import { apiLimiter } from './api/middleware/rateLimiter';
 import { PerformanceMetricsService } from './services/PerformanceMetricsService.js';
 import { AlertService } from './services/AlertService.js';
@@ -15,9 +14,13 @@ import { config } from './config/index.js';
 import AleoSDKService from './services/AleoSDKService.js';
 import { NotFoundError, ValidationError } from './utils/errors.js';
 import BlockSyncService from './services/BlockSyncService.js';
+import RewardsService from './services/RewardsService.js';
 
 const app = express();
 let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
+
+// Loglama seviyesini debug'a çek
+logger.level = 'debug';
 
 logger.info(`Initializing AleoSDKService with URL: ${config.aleo.sdkUrl} and network type: ${config.aleo.networkType}`);
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
@@ -27,9 +30,9 @@ const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, 
 const blockService = new BlockService(aleoSDKService, snarkOSDBService);
 const consensusService = new ConsensusService(aleoSDKService);
 const primaryService = new PrimaryService(aleoSDKService);
-// const syncService = new SyncService(aleoSDKService, snarkOSDBService, validatorService);
 const alertService = new AlertService(snarkOSDBService, performanceMetricsService);
 const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService);
+const rewardsService = new RewardsService(aleoSDKService, snarkOSDBService);
 
 logger.info(`ConsensusService initialized with URL: ${config.aleo.sdkUrl}`);
 
@@ -82,41 +85,39 @@ async function main() {
     await snarkOSDBService.checkAndUpdateSchema();
     logger.info('Database schema check and update completed');
 
-    // Diğer başlatma işlemleri...
     await tryConnect();
     startServer();
 
-    // Blok senkronizasyon sürecini başlat
+    logger.info('Starting block synchronization process...');
     await blockSyncService.startSyncProcess();
 
-    // Her 5 dakikada bir uptime hesaplaması
-    cron.schedule('*/2 * * * *', async () => {
+    // Her 1 dakikada bir çalışacak cron job
+    cron.schedule('* * * * *', async () => {
       try {
+        logger.info('Starting periodic tasks...');
+
+        logger.info('Synchronizing latest blocks...');
+        await blockSyncService.syncLatestBlocks();
+        logger.info('Block synchronization completed');
+
+        logger.info('Updating validator statuses...');
+        await validatorService.updateValidatorStatuses();
+        logger.info('Validator statuses updated');
+
+        logger.info('Calculating uptime for validators...');
         const validators = await snarkOSDBService.getValidators();
         for (const validator of validators) {
-          await validatorService.updateValidatorUptime(validator.address);
+          await performanceMetricsService.calculateUptime(validator.address);
         }
         logger.info('Uptime calculation completed for all validators');
+
+        logger.info('Calculating and distributing rewards...');
+        await rewardsService.calculateAndDistributeRewards();
+        logger.info('Rewards calculated and distributed');
+
+        logger.info('Periodic tasks completed successfully');
       } catch (error) {
-        logger.error('Error during periodic uptime calculation:', error);
-      }
-    });
-
-      // Her saat başı validator statülerini güncelle
-  cron.schedule('0 * * * *', async () => {
-    try {
-      await validatorService.updateValidatorStatuses();
-    } catch (error) {
-      logger.error('Validator status update failed:', error);
-    }
-  });
-
-  // Her 15 dakikada bir uptime hesaplamalarını güncelle
-  cron.schedule('*/15 * * * *', async () => {
-    try {
-      await validatorService.updateAllValidatorsUptime();
-    } catch (error) {
-      logger.error('Uptime update failed:', error);
+        logger.error('Error during periodic tasks:', error);
       }
     });
 
@@ -135,7 +136,7 @@ main().catch(error => {
   process.exit(1);
 });
 
-app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService));
+app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService));
 
 app.get('/api/validators', async (req, res) => {
   try {

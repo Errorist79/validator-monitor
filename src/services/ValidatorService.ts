@@ -13,25 +13,27 @@ export class ValidatorService {
   async updateValidatorStatuses(): Promise<void> {
     try {
       const latestCommittee = await this.aleoSDKService.getLatestCommittee();
+      const validators = await this.snarkOSDBService.getValidators();
       const currentRound = BigInt(latestCommittee.starting_round);
 
-      for (const [address, [stake, isOpen, commission]] of Object.entries(latestCommittee.members)) {
-        await this.snarkOSDBService.updateValidatorStatus(address, currentRound, true);
-        await this.snarkOSDBService.updateValidator(address, BigInt(stake), isOpen, BigInt(commission));
+      for (const validator of validators) {
+        const isActive = await this.checkValidatorActivity(validator.address);
+        await this.snarkOSDBService.updateValidatorStatus(validator.address, BigInt(currentRound), isActive);
       }
 
-      const activeValidators = await this.snarkOSDBService.getActiveValidators();
-      for (const address of activeValidators) {
-        if (!latestCommittee.members[address]) {
-          await this.snarkOSDBService.updateValidatorStatus(address, currentRound, false);
-        }
-      }
-
-      logger.info('Validator statuses updated successfully');
+      logger.info('Updated validator statuses successfully');
     } catch (error) {
       logger.error('Error updating validator statuses:', error);
       throw error;
     }
+  }
+
+  private async checkValidatorActivity(validatorAddress: string): Promise<boolean> {
+    // Bu metodu, validatörün aktif olup olmadığını kontrol etmek için uygun mantıkla doldurun
+    // Örneğin, son X blokta batch üretip üretmediğini kontrol edebilirsiniz
+    // Şimdilik basit bir örnek:
+    const recentBatches = await this.snarkOSDBService.getValidatorBatches(validatorAddress, Date.now() - 24 * 60 * 60 * 1000, Date.now());
+    return recentBatches.length > 0;
   }
 
   async getValidator(address: string): Promise<any> {
