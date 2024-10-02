@@ -6,18 +6,46 @@ import { config } from '../config/index.js';
 import { CommitteeParticipation } from '../database/models/CommitteeParticipation.js';
 import { Batch } from '../database/models/Batch.js';
 import { UptimeSnapshotAttributes } from '@/database/models/UptimeSnapshot.js';
+import syncEvents from '../events/SyncEvents.js';
+import { initializeWasm, getAddressFromSignature } from 'aleo-address-derivation';
+import { BlockSyncService } from './BlockSyncService.js';
 
 export class PerformanceMetricsService {
   private cacheService: CacheService;
 
   constructor(
     private readonly snarkOSDBService: SnarkOSDBService,
-    private readonly aleoSDKService: AleoSDKService
+    private readonly aleoSDKService: AleoSDKService,
+    private readonly blockSyncService: BlockSyncService // BlockSyncService'i enjekte ediyoruz
   ) {
+    // 'dataSynchronized' olayını dinliyoruz
+    syncEvents.on('dataSynchronized', async () => {
+      try {
+        const isSynchronized = await this.blockSyncService.isDataSynchronized();
+        if (isSynchronized) {
+          logger.info('Data is sufficiently synchronized. Starting uptime calculations.');
+          await this.updateUptimes();
+        } else {
+          logger.info('Data is not sufficiently synchronized. Skipping uptime calculations.');
+        }
+      } catch (error) {
+        logger.error('Error during uptime calculations:', error);
+      }
+    });
+
+    // 'validatorsUpdated' olayını dinliyoruz
+    syncEvents.on('validatorsUpdated', async () => {
+      try {
+        logger.info('Validators updated event received. Starting uptime calculations.');
+        await this.updateUptimes();
+      } catch (error) {
+        logger.error('Error during uptime calculations:', error);
+      }
+    });
     this.cacheService = new CacheService(300, config.redis.url); // 5 min TTL
   }
 
-  async calculateValidatorPerformance(validatorAddress: string, timeFrame: number): Promise<{
+  /* async calculateValidatorPerformance(validatorAddress: string, timeFrame: number): Promise<{
     blocksProposed: number,
     transactionsProcessed: number,
     uptime: number | null,
@@ -67,7 +95,7 @@ export class PerformanceMetricsService {
         const entryDuration = entryEnd - entryStart;
         
         // Komite büyüklüğünü hesaplamak için ek bir sorgu gerekebilir
-        const committeeSizeQuery = await this.snarkOSDBService.getCommitteeSizeForRound(entry.round);
+        const committeeSizeQuery = await this.snarkOSDBService.getCommitteeSizeForRound(BigInt(entry.round));
         const committeeSize = committeeSizeQuery.committee_size;
 
         const expectedBatchesForEntry = Math.floor(entryDuration / config.uptime.averageBatchInterval) / committeeSize;
@@ -81,7 +109,7 @@ export class PerformanceMetricsService {
 
       const uptime = (actualBatches / totalExpectedBatches) * 100;
       const uptimeSnapshot: Omit<UptimeSnapshotAttributes, 'id'> = {
-        committee_member_id: committeeEntries[0].committee_member_id,
+        validator_address: committeeEntries[0].validator_address,
         start_round: committeeEntries[0].round,
         end_round: committeeEntries[committeeEntries.length - 1].round,
         total_rounds: committeeEntries.length,
@@ -198,7 +226,7 @@ export class PerformanceMetricsService {
 
     this.cacheService.set(cacheKey, result);
     return result;
-  }
+  } */
 
   async updateUptimes(): Promise<void> {
     try {
@@ -221,40 +249,82 @@ export class PerformanceMetricsService {
   private async calculateAndUpdateUptime(validatorAddress: string, currentRound: bigint): Promise<void> {
     try {
       const calculationRoundSpan = BigInt(config.uptime.calculationRoundSpan);
+      const startRoundCandidate = currentRound > calculationRoundSpan ? currentRound - calculationRoundSpan : BigInt(0);
 
       const earliestRound = await this.snarkOSDBService.getEarliestValidatorRound(validatorAddress);
-      const startRoundCandidate = currentRound > calculationRoundSpan ? currentRound - calculationRoundSpan : BigInt(0);
       const startRound = earliestRound ? (earliestRound > startRoundCandidate ? earliestRound : startRoundCandidate) : startRoundCandidate;
 
       if (startRound >= currentRound) {
-        logger.warn(`Validator ${validatorAddress} için startRound (${startRound}) currentRound'dan (${currentRound}) büyük veya eşit.`);
+        logger.warn(`Validator ${validatorAddress}: startRound (${startRound}) >= currentRound (${currentRound}).`);
         return;
       }
 
-      const participation = await this.snarkOSDBService.getValidatorParticipation(validatorAddress, startRound, currentRound);
+      logger.debug(`Validator ${validatorAddress}: Calculating uptime from round ${startRound} to ${currentRound}.`);
 
-      const totalRounds = currentRound - startRound;
-      const participatedRounds = BigInt(participation.length);
+      // Toplam komiteleri alıyoruz
+      const totalCommitteesList = await this.snarkOSDBService.getTotalCommittees(startRound, currentRound);
 
-      if (totalRounds === BigInt(0)) {
-        logger.warn(`Validator ${validatorAddress} için totalRounds değeri sıfır.`);
+      const totalCommitteesCount = totalCommitteesList.length;
+
+      logger.debug(`Validator ${validatorAddress}: Total committees count between rounds ${startRound} and ${currentRound}: ${totalCommitteesCount}`);
+
+      if (totalCommitteesCount === 0) {
+        logger.warn(`Validator ${validatorAddress}: No committees found between rounds ${startRound} and ${currentRound}.`);
         return;
       }
 
-      const uptimePercentage = Number(participatedRounds * BigInt(100)) / Number(totalRounds);
+      // Validator'ın batch katılımlarını alıyoruz
+      const validatorBatchParticipation = await this.snarkOSDBService.getValidatorParticipation(validatorAddress, startRound, currentRound);
 
+      // Validator'ın imza katılımlarını alıyoruz
+      const validatorSignatureParticipation = await this.snarkOSDBService.getSignatureParticipation(validatorAddress, startRound, currentRound);
+
+      // Uptime hesaplamasında batch ve imza katılımlarını birleştirme
+      const participatedCommittees = new Map<string, Set<bigint>>();
+
+      for (const vp of validatorBatchParticipation) {
+        participatedCommittees.set(vp.committee_id, new Set(vp.rounds));
+      }
+
+      for (const sp of validatorSignatureParticipation) {
+        if (!participatedCommittees.has(sp.committee_id)) {
+          participatedCommittees.set(sp.committee_id, new Set());
+        }
+        const roundsSet = participatedCommittees.get(sp.committee_id)!;
+        for (const round of sp.rounds) {
+          roundsSet.add(round);
+        }
+      }
+
+      let participatedCommitteesCount = 0;
+
+      for (const committee of totalCommitteesList) {
+        const validatorRounds = participatedCommittees.get(committee.committee_id) || new Set<bigint>();
+
+        const intersection = committee.rounds.filter((round: bigint) => validatorRounds.has(round));
+
+        if (intersection.length > 0) {
+          participatedCommitteesCount++;
+        } else {
+          logger.info(`Validator ${validatorAddress} did not participate in committee ${committee.committee_id} spanning rounds ${committee.rounds.join(', ')}`);
+        }
+      }
+
+      const uptimePercentage = (participatedCommitteesCount / totalCommitteesCount) * 100;
+
+      // Uptime değerini güncelliyoruz
       await this.snarkOSDBService.updateValidatorUptime(
         validatorAddress,
         startRound,
         currentRound,
-        totalRounds,
-        participatedRounds,
+        BigInt(totalCommitteesCount),
+        BigInt(participatedCommitteesCount),
         uptimePercentage
       );
 
-      logger.info(`Validator ${validatorAddress} için uptime güncellendi. Uptime: ${uptimePercentage.toFixed(2)}%`);
+      logger.info(`Validator ${validatorAddress}: Uptime updated. Uptime: ${uptimePercentage.toFixed(2)}%`);
     } catch (error) {
-      logger.error(`Validator ${validatorAddress} için uptime hesaplama hatası:`, error);
+      logger.error(`Validator ${validatorAddress}: Error calculating uptime:`, error);
       throw error;
     }
   }

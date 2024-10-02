@@ -20,15 +20,6 @@ type BondedResult = {
   microcredits: string | number;
 };
 
-type MappingResult = CommitteeResult | BondedResult | string;
-
-function isCommitteeResult(result: MappingResult): result is CommitteeResult {
-  return typeof result === 'object' && 'is_open' in result && 'commission' in result;
-}
-
-function isBondedResult(result: MappingResult): result is BondedResult {
-  return typeof result === 'object' && 'validator' in result && 'microcredits' in result;
-}
 export class AleoSDKService {
   private network: AleoNetworkClient;
 

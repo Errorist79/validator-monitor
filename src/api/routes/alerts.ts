@@ -4,7 +4,7 @@ import { AlertService } from '../../services/AlertService.js';
 const router = express.Router();
 
 export default (alertService: AlertService) => {
-  router.get('/:address', async (req, res) => {
+/*   router.get('/:address', async (req, res) => {
     try {
       const { address } = req.params;
       const alerts = await alertService.checkAllAlerts(address);
@@ -16,7 +16,7 @@ export default (alertService: AlertService) => {
         res.status(500).json({ error: 'Bilinmeyen bir hata oluştu' });
       }
     }
-  });
+  }); */
 
   return router;
 };

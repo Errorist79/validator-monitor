@@ -60,7 +60,7 @@ export class ValidatorService {
     }
   }
 
-  async getValidatorPerformance(address: string): Promise<any> {
+  /* async getValidatorPerformance(address: string): Promise<any> {
     try {
       const validator = await this.snarkOSDBService.executeQuery(
         'SELECT * FROM validators WHERE address = $1',
@@ -94,7 +94,7 @@ export class ValidatorService {
         throw new Error('An unknown error occurred during validator performance calculation');
       }
     }
-  }
+  } */
 
   /* async updateValidatorUptime(validatorAddress: string): Promise<void> {
     try {
@@ -124,7 +124,7 @@ export class ValidatorService {
     }
   } */
 
-  async getAllValidators(): Promise<any[]> {
+/*   async getAllValidators(): Promise<any[]> {
     return this.snarkOSDBService.getValidators();
   }
 
@@ -138,7 +138,7 @@ export class ValidatorService {
 
   private calculateTotalFees(blocks: any[]): string {
     return blocks.reduce((sum, block) => sum + BigInt(block.total_fees), BigInt(0)).toString();
-  }
+  } */
 }
 
 export default ValidatorService;

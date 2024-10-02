@@ -15,6 +15,7 @@ import AleoSDKService from './services/AleoSDKService.js';
 import { NotFoundError, ValidationError } from './utils/errors.js';
 import BlockSyncService from './services/BlockSyncService.js';
 import RewardsService from './services/RewardsService.js';
+import syncEvents from './events/SyncEvents.js';
 
 const app = express();
 let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
@@ -24,14 +25,14 @@ logger.level = 'debug';
 
 logger.info(`Initializing AleoSDKService with URL: ${config.aleo.sdkUrl} and network type: ${config.aleo.networkType}`);
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
-const snarkOSDBService = new SnarkOSDBService();
-const performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService);
+const snarkOSDBService = new SnarkOSDBService(aleoSDKService);
+const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService);
+const performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService);
 const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, performanceMetricsService);
 const blockService = new BlockService(aleoSDKService, snarkOSDBService);
 const consensusService = new ConsensusService(aleoSDKService);
 const primaryService = new PrimaryService(aleoSDKService);
 const alertService = new AlertService(snarkOSDBService, performanceMetricsService);
-const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService);
 const rewardsService = new RewardsService(aleoSDKService, snarkOSDBService);
 
 logger.info(`ConsensusService initialized with URL: ${config.aleo.sdkUrl}`);
@@ -70,12 +71,13 @@ function startServer() {
       port++;
       startServer();
     } else {
-      logger.error('Error occurred while starting the server:', error);
+      logger.error('Server error:', error);
+      process.exit(1);
     }
   });
 }
 
-async function main() {
+async function initialize() {
   try {
     logger.info('Initializing database...');
     await snarkOSDBService.initializeDatabase();
@@ -88,53 +90,41 @@ async function main() {
     await tryConnect();
     startServer();
 
-    logger.info('Starting block synchronization process...');
-    await blockSyncService.startSyncProcess();
+    // API rotalarını ekliyoruz
+    app.use(express.json());
+    app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService));
 
-    // Periyodik görevlerin başlatılması
+    // BlockSyncService'i düzenli olarak çalıştırıyoruz
+    async function startBlockSync() {
+      try {
+        await blockSyncService.syncLatestBlocks();
+        logger.info('Block synchronization completed.');
+      } catch (error) {
+        logger.error('Error during block synchronization:', error);
+      }
+    }
+
+    // Her 10 saniyede bir blokları senkronize ediyoruz
+    setInterval(startBlockSync, 10000);
+
+    // Uptime hesaplamalarını her dakika tekrarla
     cron.schedule('* * * * *', async () => {
       try {
-        logger.info('Starting periodic tasks...');
-
-        // En son blokların senkronizasyonu
-        logger.info('Synchronizing latest blocks...');
-        await blockSyncService.syncLatestBlocks();
-        logger.info('Block synchronization completed');
-
-        // Validator durumlarının güncellenmesi
-        logger.info('Updating validator statuses...');
-        await validatorService.updateValidatorStatuses();
-        logger.info('Validator statuses updated');
-
-        // Uptime hesaplaması
-        logger.info('Calculating uptime for validators...');
+        logger.info('Scheduled uptime calculation started.');
         await performanceMetricsService.updateUptimes();
-        logger.info('Uptime calculation completed');
-
-        logger.info('Calculating and distributing rewards...');
-        await rewardsService.calculateAndDistributeRewards();
-        logger.info('Rewards calculated and distributed');
-
-        logger.info('Periodic tasks completed successfully');
+        logger.info('Scheduled uptime calculation completed.');
       } catch (error) {
-        logger.error('Error during periodic tasks:', error);
+        logger.error('Error during scheduled uptime calculation:', error);
       }
     });
 
   } catch (error) {
-    logger.error('Error occurred while starting the application:', error);
-    if (error instanceof Error) {
-      logger.error('Error details:', error.message);
-      logger.error('Error stack:', error.stack);
-    }
+    logger.error('Initialization error:', error);
     process.exit(1);
   }
 }
 
-main().catch(error => {
-  logger.error('An unexpected error occurred:', error);
-  process.exit(1);
-});
+initialize();
 
 app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService));
 
@@ -278,7 +268,7 @@ app.get('/api/test/raw-latest-block', async (req, res) => {
   }
 });
 
-app.get('/api/alerts/:address', async (req, res) => {
+/* app.get('/api/alerts/:address', async (req, res) => {
   try {
     const { address } = req.params;
     const alerts = await alertService.checkAllAlerts(address);
@@ -287,11 +277,15 @@ app.get('/api/alerts/:address', async (req, res) => {
     logger.error('Error checking alerts:', error);
     res.status(500).json({ error: 'Failed to check alerts' });
   }
-});
+}); */
 
-// Her saat başı uptime'ları güncelle
-setInterval(() => {
-  performanceMetricsService.updateUptimes().catch(error => {
-    console.error('Uptime güncelleme hatası:', error);
-  });
-}, 60 * 60 * 1000); // 1 saat
+// Uptime hesaplamalarını her saat başı tekrarla
+cron.schedule('* * * * *', async () => {
+  try {
+    logger.info('Scheduled uptime calculation started.');
+    await performanceMetricsService.updateUptimes();
+    logger.info('Scheduled uptime calculation completed.');
+  } catch (error) {
+    logger.error('Error during scheduled uptime calculation:', error);
+  }
+});

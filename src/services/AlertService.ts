@@ -37,7 +37,7 @@ export class AlertService {
     return missedBlocks;
   }
 
-  async checkLowUptime(validatorAddress: string, threshold: number): Promise<boolean> {
+  /* async checkLowUptime(validatorAddress: string, threshold: number): Promise<boolean> {
     try {
       const uptime = await this.performanceMetricsService.calculateUptime(validatorAddress);
       if (uptime === null) {
@@ -53,7 +53,7 @@ export class AlertService {
       logger.error(`Error checking uptime for validator ${validatorAddress}:`, error);
       throw error;
     }
-  }
+  } */
 
   async checkLowRewards(validatorAddress: string, threshold: bigint, timeFrame: number): Promise<boolean> {
     try {
@@ -74,7 +74,7 @@ export class AlertService {
     }
   }
 
-  async checkLowEfficiency(validatorAddress: string, threshold: number, timeFrame: number): Promise<boolean> {
+  /* async checkLowEfficiency(validatorAddress: string, threshold: number, timeFrame: number): Promise<boolean> {
     try {
       const efficiency = await this.performanceMetricsService.getValidatorEfficiency(validatorAddress, timeFrame);
       if (efficiency < threshold) {
@@ -90,9 +90,9 @@ export class AlertService {
       }
       throw error;
     }
-  }
+  } */
 
-  async checkAllAlerts(validatorAddress: string): Promise<{
+  /* async checkAllAlerts(validatorAddress: string): Promise<{
     missedBlocks: boolean,
     lowUptime: boolean,
     lowRewards: boolean,
@@ -127,7 +127,7 @@ export class AlertService {
       logger.error(`Error getting health status for validator ${validatorAddress}:`, error);
       throw error;
     }
-  }
+  } */
 
   private getAlertDescription(alertType: string): string {
     const descriptions: { [key: string]: string } = {

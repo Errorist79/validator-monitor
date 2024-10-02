@@ -7,7 +7,7 @@ import logger from '../../utils/logger.js';
 const router = express.Router();
 
 export default (validatorService: ValidatorService, performanceMetricsService: PerformanceMetricsService, alertService: AlertService) => {
-  router.get('/', async (req, res) => {
+ /*  router.get('/', async (req, res) => {
     try {
       const validators = await validatorService.getAllValidators();
       res.json(validators);
@@ -108,7 +108,7 @@ export default (validatorService: ValidatorService, performanceMetricsService: P
         res.status(500).json({ error: 'Bilinmeyen bir hata oluştu' });
       }
     }
-  });
+  }); */
 
   function formatRewards(rewards: bigint): string {
     return new Intl.NumberFormat('en-US', { style: 'decimal', maximumFractionDigits: 2 }).format(Number(rewards) / 1e9) + ' ALEO';

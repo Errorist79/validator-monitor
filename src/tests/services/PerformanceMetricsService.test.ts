@@ -3,7 +3,7 @@ import { SnarkOSDBService } from '../../services/SnarkOSDBService';
 import { AleoSDKService } from '../../services/AleoSDKService';
 import { CommitteeParticipation } from '../../database/models/CommitteeParticipation.js';
 import { Batch } from '../../database/models/Batch.js';
-
+import { BlockSyncService } from '../../services/BlockSyncService.js';
 jest.mock('../../services/SnarkOSDBService');
 jest.mock('../../services/AleoSDKService');
 
@@ -11,18 +11,19 @@ describe('PerformanceMetricsService', () => {
   let performanceMetricsService: PerformanceMetricsService;
   let mockSnarkOSDBService: jest.Mocked<SnarkOSDBService>;
   let mockAleoSDKService: jest.Mocked<AleoSDKService>;
-
+  let mockBlockSyncService: jest.Mocked<BlockSyncService>;
   beforeEach(() => {
-    mockSnarkOSDBService = new SnarkOSDBService() as jest.Mocked<SnarkOSDBService>;
+    mockSnarkOSDBService = new SnarkOSDBService(mockAleoSDKService) as jest.Mocked<SnarkOSDBService>;
     mockAleoSDKService = new AleoSDKService('https://api.explorer.provable.com/v1', 'testnet') as jest.Mocked<AleoSDKService>;
-    performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService);
+    mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService) as jest.Mocked<BlockSyncService>;
+    performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService, mockBlockSyncService);
   });
 
   describe('calculateUptime', () => {
     it('should calculate uptime correctly', async () => {
       const mockCommitteeEntries = [
-        CommitteeParticipation.build({ id: 1, committee_member_id: 1, committee_id: 'committee1', round: 1, block_height: 1, timestamp: 1000 }),
-        CommitteeParticipation.build({ id: 2, committee_member_id: 1, committee_id: 'committee1', round: 2, block_height: 2, timestamp: 2000 }),
+        CommitteeParticipation.build({ id: 1, validator_address: "aleo1", committee_id: 'committee1', round: 1, block_height: 1, timestamp: 1000 }),
+        CommitteeParticipation.build({ id: 2, validator_address: "aleo1", committee_id: 'committee1', round: 2, block_height: 2, timestamp: 2000 }),
       ];
       const mockBatches = [
         Batch.build({ batch_id: 'batch1', author: 'testAddress', round: 1, timestamp: 1100, committee_id: 'committee1', block_height: 1 }),
@@ -34,7 +35,7 @@ describe('PerformanceMetricsService', () => {
       mockSnarkOSDBService.getValidatorBatches.mockResolvedValue(mockBatches);
       mockSnarkOSDBService.getCommitteeSizeForRound.mockResolvedValue({ committee_size: 10 });
 
-      const result = await performanceMetricsService.calculateUptime('testAddress', 2000);
+      const result = await performanceMetricsService.updateUptimes();
       
       // Beklenen batch sayısı: (1000 / 5 / 10) + (1000 / 5 / 10) = 20 + 20 = 40
       // Gerçek batch sayısı: 2 + 1 = 3

@@ -3,7 +3,7 @@ import { SnarkOSDBService } from '../services/SnarkOSDBService.js';
 import { AleoSDKService } from '../services/AleoSDKService.js';
 import { config } from '../config/index.js';
 import { Block, BlockAttributes } from '../database/models/Block.js';
-
+import { BlockSyncService } from '../services/BlockSyncService.js';
 // Jest'in global fonksiyonlarını tanımlayalım
 declare const describe: jest.Describe;
 declare const beforeAll: jest.Lifecycle;
@@ -15,14 +15,16 @@ describe('Uptime Calculation', () => {
   let snarkOSDBService: SnarkOSDBService;
   let aleoSDKService: AleoSDKService;
   let performanceMetricsService: PerformanceMetricsService;
+  let mockBlockSyncService: jest.Mocked<BlockSyncService>;
   const testValidatorAddress = 'test_validator';
 
   beforeAll(async () => {
     // Test veritabanı bağlantısını kur
     process.env.TEST_DATABASE_URL = 'postgres://postgres:admin@localhost:5432/testdb';
-    snarkOSDBService = new SnarkOSDBService();
+    snarkOSDBService = new SnarkOSDBService(aleoSDKService);
     aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet'); // AleoSDKService örneği oluştur
-    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService);
+    mockBlockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService) as jest.Mocked<BlockSyncService>;
+    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, mockBlockSyncService);
 
     // Test veritabanını hazırla
     await snarkOSDBService.initializeDatabase();
@@ -30,19 +32,19 @@ describe('Uptime Calculation', () => {
   });
 
   it('should calculate uptime correctly', async () => {
-    const uptime = await performanceMetricsService.calculateUptime(testValidatorAddress);
+    const uptime = await performanceMetricsService.updateUptimes();
     expect(uptime).toBeGreaterThan(0);
     expect(uptime).toBeLessThanOrEqual(100);
   });
 
   it('should calculate uptime for last 1 hour correctly', async () => {
-    const uptimeLast1Hour = await performanceMetricsService.calculateUptime(testValidatorAddress, 3600);
+    const uptimeLast1Hour = await performanceMetricsService.updateUptimes();
     expect(uptimeLast1Hour).toBeGreaterThan(0);
     expect(uptimeLast1Hour).toBeLessThanOrEqual(100);
   });
 
   it('should calculate uptime for last 24 hours correctly', async () => {
-    const uptimeLast24Hours = await performanceMetricsService.calculateUptime(testValidatorAddress, 86400);
+    const uptimeLast24Hours = await performanceMetricsService.updateUptimes();
     expect(uptimeLast24Hours).toBeGreaterThan(0);
     expect(uptimeLast24Hours).toBeLessThanOrEqual(100);
   });

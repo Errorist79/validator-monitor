@@ -2,7 +2,7 @@ import { Model, DataTypes, Sequelize } from 'sequelize';
 
 export interface CommitteeParticipationAttributes {
   id: number;
-  committee_member_id: number;
+  validator_address: string;
   committee_id: string;
   round: number;
   block_height: number;
@@ -11,7 +11,7 @@ export interface CommitteeParticipationAttributes {
 
 export class CommitteeParticipation extends Model<CommitteeParticipationAttributes> implements CommitteeParticipationAttributes {
   public id!: number;
-  public committee_member_id!: number;
+  public validator_address!: string;
   public committee_id!: string;
   public round!: number;
   public block_height!: number;
@@ -25,11 +25,11 @@ export const initCommitteeParticipation = (sequelize: Sequelize) => {
       autoIncrement: true,
       primaryKey: true,
     },
-    committee_member_id: {
-      type: DataTypes.INTEGER,
+    validator_address: {
+      type: DataTypes.STRING,
       references: {
-        model: 'CommitteeMember',
-        key: 'id',
+        model: 'committee_members',
+        key: 'address',
       },
     },
     committee_id: DataTypes.STRING,
@@ -40,7 +40,7 @@ export const initCommitteeParticipation = (sequelize: Sequelize) => {
     sequelize,
     modelName: 'CommitteeParticipation',
     indexes: [
-      { fields: ['committee_member_id', 'round'] },
+      { fields: ['validator_address', 'round'] },
       { fields: ['committee_id', 'round'] },
       { fields: ['timestamp'] }
     ]

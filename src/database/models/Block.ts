@@ -36,17 +36,17 @@ export interface APIBlockHeader {
 export interface APIBatchHeader {
   batch_id: string;
   author: string;
-  round: string;
+  round: number;
   timestamp: number;
   committee_id: string;
   transmission_ids: string[];
   previous_certificate_ids: string[];
-  signature: string;
+  signature: string; // 'signature' alanını ekledik
 }
 
 export interface APIBatch {
   batch_header: APIBatchHeader;
-  signatures: string[];
+  signatures?: string[]; // 'signatures' alanını isteğe bağlı olarak tanımladık
 }
 
 export interface APIAuthority {

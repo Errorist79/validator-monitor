@@ -135,3 +135,5 @@ yarn.lock
 .netlify
 example-block.json
 one-block.json
+package.json
+3-block.json

@@ -2,7 +2,7 @@ import { Model, DataTypes, Sequelize } from 'sequelize';
 
 export interface UptimeSnapshotAttributes {
   id?: number;
-  committee_member_id: number;
+  validator_address: string;
   start_round: number;
   end_round: number;
   total_rounds: number;
@@ -13,7 +13,7 @@ export interface UptimeSnapshotAttributes {
 
 export class UptimeSnapshot extends Model<UptimeSnapshotAttributes> implements UptimeSnapshotAttributes {
   public id!: number;
-  public committee_member_id!: number;
+  public validator_address!: string;
   public start_round!: number;
   public end_round!: number;
   public total_rounds!: number;
@@ -28,8 +28,8 @@ export class UptimeSnapshot extends Model<UptimeSnapshotAttributes> implements U
         autoIncrement: true,
         primaryKey: true,
       },
-      committee_member_id: {
-        type: DataTypes.INTEGER,
+      validator_address: {
+        type: DataTypes.STRING,
         allowNull: false,
       },
       start_round: {
