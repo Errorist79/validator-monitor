@@ -291,3 +291,14 @@ cron.schedule('* * * * *', async () => {
     logger.error('Error during scheduled uptime calculation:', error);
   }
 });
+
+// Her 5 dakikada bir validator statülerini güncelle
+cron.schedule('*/5 * * * *', async () => {
+  try {
+    logger.info('Starting validator status update');
+    await validatorService.updateValidatorStatuses();
+    logger.info('Completed validator status update');
+  } catch (error) {
+    logger.error('Error updating validator statuses:', error);
+  }
+});

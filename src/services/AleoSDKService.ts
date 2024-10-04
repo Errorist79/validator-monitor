@@ -403,6 +403,30 @@ export class AleoSDKService {
       throw new Error(`Failed to get block range from ${startHeight} to ${endHeight}`);
     }
   }
+
+  async getMappings(author: string): Promise<{
+    committeeMapping: CommitteeMapping | null;
+    bondedMapping: BondedMapping | null;
+    delegatedMapping: DelegatedMapping | null;
+  }> {
+    try {
+      const [committeeMapping, bondedMapping, delegatedMapping] = await Promise.all([
+        this.getCommitteeMapping(author),
+        this.getBondedMapping(author),
+        this.getDelegatedMapping(author)
+      ]);
+
+      return { committeeMapping, bondedMapping, delegatedMapping };
+    } catch (error) {
+      logger.error(`Error fetching mappings for author ${author}:`, error);
+      // Hata durumunda da bir nesne döndürüyoruz
+      return {
+        committeeMapping: null,
+        bondedMapping: null,
+        delegatedMapping: null
+      };
+    }
+  }
 }
 
 export default AleoSDKService;

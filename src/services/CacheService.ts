@@ -16,21 +16,15 @@ class RedisCacheStrategy implements ICacheStrategy {
   }
 
   async set(key: string, value: any, ttl?: number): Promise<void> {
-    const serializedValue = JSON.stringify(value, (_, v) =>
-      typeof v === 'bigint' ? v.toString() : v
-    );
     if (ttl) {
-      await this.redis.setex(key, ttl, serializedValue);
+      await this.redis.setex(key, ttl, value);
     } else {
-      await this.redis.set(key, serializedValue);
+      await this.redis.set(key, value);
     }
   }
 
   async get(key: string): Promise<any> {
-    const value = await this.redis.get(key);
-    return value ? JSON.parse(value, (_, v) =>
-      typeof v === 'string' && /^\d+n$/.test(v) ? BigInt(v.slice(0, -1)) : v
-    ) : null;
+    return await this.redis.get(key);
   }
 
   async del(key: string): Promise<void> {
@@ -49,12 +43,42 @@ export class CacheService {
     this.strategy = new RedisCacheStrategy(redisUrl);
   }
 
-  async set(key: string, value: any, ttl?: number): Promise<void> {
-    await this.strategy.set(key, value, ttl);
+  // Özel replacer fonksiyonu
+  private replacer(key: string, value: any): any {
+    if (typeof value === 'bigint') {
+      return value.toString() + 'n';
+    }
+    return value;
   }
 
-  async get(key: string): Promise<any> {
-    return await this.strategy.get(key);
+  // Özel reviver fonksiyonu
+  private reviver(key: string, value: any): any {
+    if (typeof value === 'string' && /^\d+n$/.test(value)) {
+      return BigInt(value.slice(0, -1));
+    }
+    return value;
+  }
+
+  async set<T>(key: string, value: T, ttl?: number): Promise<void> {
+    const serializedValue = JSON.stringify(value, this.replacer);
+    if (ttl) {
+      await this.strategy.set(key, serializedValue, ttl);
+    } else {
+      await this.strategy.set(key, serializedValue);
+    }
+  }
+
+  async get<T>(key: string): Promise<T | null> {
+    const data = await this.strategy.get(key);
+    if (data) {
+      try {
+        return JSON.parse(data, this.reviver);
+      } catch (error) {
+        logger.error(`Error parsing cached data for key ${key}:`, error);
+        return null;
+      }
+    }
+    return null;
   }
 
   async del(key: string): Promise<void> {

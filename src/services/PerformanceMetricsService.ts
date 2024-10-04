@@ -137,7 +137,19 @@ export class PerformanceMetricsService {
         uptimePercentage
       );
 
-      logger.info(`Validator ${validatorAddress}: Uptime updated. Uptime: ${uptimePercentage.toFixed(2)}%`);
+      const uptimeSnapshot: Omit<UptimeSnapshotAttributes, 'id'> = {
+        validator_address: validatorAddress,
+        start_round: startRound,
+        end_round: currentRound,
+        total_rounds: totalCommitteesCount,
+        participated_rounds: participatedCommitteesCount,
+        uptime_percentage: uptimePercentage,
+        calculated_at: new Date()
+      };
+
+      await this.snarkOSDBService.insertUptimeSnapshot(uptimeSnapshot);
+
+      logger.info(`Uptime calculated for validator ${validatorAddress}: ${uptimePercentage.toFixed(2)}%`);
     } catch (error) {
       logger.error(`Validator ${validatorAddress}: Error calculating uptime:`, error);
       throw error;
@@ -158,9 +170,9 @@ export class PerformanceMetricsService {
 
   async getValidatorEfficiency(validatorAddress: string, timeFrame: number): Promise<number> {
     const cacheKey = `validator_efficiency_${validatorAddress}_${timeFrame}`;
-    const cachedData = await this.cacheService.get(cacheKey); // await eklendi
+    const cachedData = await this.cacheService.get(cacheKey);
     if (cachedData !== null) {
-      return cachedData;
+      return Number(cachedData);
     }
 
     try {
@@ -187,13 +199,13 @@ export class PerformanceMetricsService {
 
   private async getTotalValidatorsCount(): Promise<number> {
     const cacheKey = 'total_validators_count';
-    const cachedCount = await this.cacheService.get(cacheKey); // await eklendi
+    const cachedCount = await this.cacheService.get(cacheKey);
     if (cachedCount !== null) {
-      return cachedCount;
+      return Number(cachedCount);
     }
 
     const count = await this.snarkOSDBService.getTotalValidatorsCount();
-    await this.cacheService.set(cacheKey, count); // await eklendi
+    await this.cacheService.set(cacheKey, count);
     return count;
   }
 

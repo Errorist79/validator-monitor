@@ -7,6 +7,7 @@ import { Batch } from '../database/models/Batch.js';
 import { UptimeSnapshot, UptimeSnapshotAttributes} from '../database/models/UptimeSnapshot.js';
 import {AleoSDKService} from './AleoSDKService.js';
 import pkg from 'pg';
+import format from 'pg-format';
 const { Pool } = pkg;
 
 export class SnarkOSDBService {
@@ -16,6 +17,9 @@ export class SnarkOSDBService {
   constructor(aleoSDKService: AleoSDKService) {
     this.pool = new Pool({
       connectionString: config.database.url,
+      max: 20, // Maksimum bağlantı sayısını artırıyoruz
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
     });
     this.aleoSDKService = aleoSDKService;
 
@@ -121,6 +125,7 @@ export class SnarkOSDBService {
           is_open BOOLEAN NOT NULL,
           commission NUMERIC NOT NULL,
           is_active BOOLEAN NOT NULL DEFAULT true,
+          block_height BIGINT NOT NULL,
           last_updated TIMESTAMP NOT NULL DEFAULT NOW()
         );
 
@@ -143,7 +148,7 @@ export class SnarkOSDBService {
           author TEXT NOT NULL,
           round BIGINT NOT NULL,
           timestamp BIGINT NOT NULL,
-          committee_id TEXT NOT NULL,
+          committee_id TEXT NOT NULL DEFAULT 'unknown',
           block_height BIGINT REFERENCES blocks(height),
           PRIMARY KEY (batch_id, round)
         );
@@ -858,32 +863,28 @@ export class SnarkOSDBService {
   async updateValidatorStatus(address: string, currentRound: bigint, isActive: boolean): Promise<void> {
     const query = `
       INSERT INTO validator_status (address, last_active_round, consecutive_inactive_rounds, is_active, last_updated)
-      VALUES ($1, $2, 0, $3, CURRENT_TIMESTAMP)
-      ON CONFLICT (address) DO UPDATE SET
-        last_active_round = $2,
-        consecutive_inactive_rounds = CASE
-          WHEN $3 = true THEN 0
-          ELSE validator_status.consecutive_inactive_rounds + 1
-        END,
-        is_active = CASE
-          WHEN $3 = true THEN true
-          WHEN validator_status.consecutive_inactive_rounds + 1 >= 10 THEN false
-          ELSE validator_status.is_active
-        END,
-        last_updated = CURRENT_TIMESTAMP
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (address) DO UPDATE
+      SET last_active_round = CASE
+            WHEN $4 = true THEN $2
+            ELSE validator_status.last_active_round
+          END,
+          consecutive_inactive_rounds = CASE
+            WHEN $4 = true THEN 0
+            ELSE validator_status.consecutive_inactive_rounds + 1
+          END,
+          is_active = $4,
+          last_updated = NOW()
     `;
-    try {
-      await this.pool.query(query, [address, currentRound.toString(), isActive]);
-      // logger.debug(`Updated status for validator ${address}, isActive: ${isActive}`);
-    } catch (error) {
-      logger.error(`Error updating validator status for ${address}:`, error);
-      throw error;
-    }
+    
+    await this.pool.query(query, [address, currentRound.toString(), 0, isActive]);
+    logger.debug(`Updated status for validator ${address}: isActive=${isActive}, lastActiveRound=${currentRound}`);
   }
 
   async getActiveValidators(): Promise<string[]> {
-    const query = 'SELECT address FROM validator_status WHERE is_active = true';
+    const query = 'SELECT address FROM committee_members WHERE is_active = true';
     const result = await this.pool.query(query);
+    logger.debug(`Retrieved ${result.rows.length} active validators`);
     return result.rows.map(row => row.address);
   }
 
@@ -1128,76 +1129,130 @@ export class SnarkOSDBService {
     }));
   }
 
-  /* async updateValidatorStatus(address: string, currentRound: bigint, isActive: boolean): Promise<void> {
-    const query = `
-      INSERT INTO validator_status (address, last_active_round, consecutive_inactive_rounds, is_active, last_updated)
-      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
-      ON CONFLICT (address) DO UPDATE SET
-        last_active_round = CASE WHEN $4 = true THEN $2 ELSE validator_status.last_active_round END,
-        consecutive_inactive_rounds = CASE 
-          WHEN $4 = true THEN 0 
-          ELSE validator_status.consecutive_inactive_rounds + 1 
-        END,
-        is_active = CASE 
-          WHEN $4 = true THEN true 
-          WHEN validator_status.consecutive_inactive_rounds + 1 >= 10 THEN false 
-          ELSE validator_status.is_active 
-        END,
-        last_updated = CURRENT_TIMESTAMP
-    `;
-    try {
-      await this.pool.query(query, [address, currentRound.toString(), 0, isActive]);
-      logger.debug(`Updated status for validator ${address}, isActive: ${isActive}`);
-    } catch (error) {
-      logger.error(`Error updating validator status for ${address}:`, error);
-      throw error;
-    }
-  }
-
-  async getActiveValidators(): Promise<string[]> {
-    const query = 'SELECT address FROM validator_status WHERE is_active = true';
-    const result = await this.pool.query(query);
-    return result.rows.map(row => row.address);
-  }
-
-  async getValidatorByAddress(address: string): Promise<any | null> {
-    try {
-      const result = await this.pool.query('SELECT * FROM committee_members WHERE address = $1', [address]);
-      return result.rows[0] || null;
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        throw new Error(`SnarkOS DB getValidatorByAddress error: ${error.message}`);
+  async bulkInsertCommitteeMembers(members: any[]): Promise<void> {
+    if (members.length === 0) return;
+  
+    // Veri tekrarlarını önlemek için Map kullanıyoruz
+    const uniqueMembersMap = new Map<string, any>();
+    for (const member of members) {
+      const key = member.address;
+      if (!uniqueMembersMap.has(key)) {
+        uniqueMembersMap.set(key, member);
+      } else {
+        // Eğer aynı adres varsa, gerekli alanları güncelliyoruz
+        const existingMember = uniqueMembersMap.get(key);
+        existingMember.last_seen_block = Math.max(existingMember.last_seen_block, member.last_seen_block);
+        existingMember.total_stake = member.total_stake;
+        existingMember.is_open = member.is_open;
+        existingMember.commission = member.commission;
+        existingMember.is_active = member.is_active;
+        existingMember.block_height = member.block_height;
       }
-      throw new Error('SnarkOS DB getValidatorByAddress error: An unknown error occurred');
     }
+    const uniqueMembers = Array.from(uniqueMembersMap.values());
+
+    const values = uniqueMembers.map(m => [
+      m.address,
+      m.first_seen_block,
+      m.last_seen_block,
+      m.total_stake,
+      m.is_open,
+      m.commission,
+      m.is_active,
+      m.block_height
+    ]);
+
+    const query = format(`
+      INSERT INTO committee_members (address, first_seen_block, last_seen_block, total_stake, is_open, commission, is_active, block_height)
+      VALUES %L
+      ON CONFLICT (address) DO UPDATE SET
+        last_seen_block = EXCLUDED.last_seen_block,
+        total_stake = EXCLUDED.total_stake,
+        is_open = EXCLUDED.is_open,
+        commission = EXCLUDED.commission,
+        is_active = EXCLUDED.is_active,
+        block_height = EXCLUDED.block_height
+    `, values);
+
+    await this.pool.query(query);
   }
 
-  async getEarliestValidatorRound(validatorAddress: string): Promise<bigint | null> {
-    const query = `
-      SELECT MIN(round) as min_round FROM committee_participation
-      WHERE validator_address = $1
-    `;
-    const result = await this.pool.query(query, [validatorAddress]);
-    return result.rows[0].min_round ? BigInt(result.rows[0].min_round) : null;
+  async bulkInsertBatchInfos(batchInfos: any[]): Promise<void> {
+    if (batchInfos.length === 0) return;
+
+    const uniqueBatchInfos = Array.from(new Map(batchInfos.map(item => [item.batch_id + '-' + item.round, item])).values());
+
+    const values = uniqueBatchInfos.map(b => [
+      b.batch_id,
+      b.author,
+      b.block_height,
+      b.round,
+      b.timestamp,
+      b.committee_id || 'unknown' // Eğer committee_id null ise 'unknown' kullan
+    ]);
+
+    const query = format(`
+      INSERT INTO batches (batch_id, author, block_height, round, timestamp, committee_id)
+      VALUES %L
+      ON CONFLICT (batch_id, round) DO UPDATE SET
+        author = EXCLUDED.author,
+        block_height = EXCLUDED.block_height,
+        timestamp = EXCLUDED.timestamp,
+        committee_id = EXCLUDED.committee_id
+    `, values);
+
+    await this.pool.query(query);
   }
 
-  async getTotalCommittees(startRound: bigint, endRound: bigint): Promise<{ committee_id: string, round: bigint }[]> {
-    const query = `
-      SELECT DISTINCT committee_id, round FROM batches
-      WHERE round BETWEEN $1 AND $2
-    `;
-    const result = await this.pool.query(query, [startRound.toString(), endRound.toString()]);
-    return result.rows.map(row => ({ committee_id: row.committee_id, round: BigInt(row.round) }));
+  async bulkInsertCommitteeParticipations(participations: any[]): Promise<void> {
+    if (participations.length === 0) return;
+
+    const values = participations.map(p => [
+      p.validator_address,
+      p.committee_id,
+      p.round,
+      p.block_height,
+      p.timestamp
+    ]);
+
+    const query = format(`
+      INSERT INTO committee_participation (validator_address, committee_id, round, block_height, timestamp)
+      VALUES %L
+      ON CONFLICT DO NOTHING
+    `, values);
+
+    await this.pool.query(query);
   }
 
-  async getBatchInfoByCommitteeAndRound(committeeId: string, round: bigint): Promise<any | null> {
+  async bulkInsertSignatureParticipations(signatures: any[]): Promise<void> {
+    if (signatures.length === 0) return;
+
+    const values = signatures.map(s => [
+      s.validator_address,
+      s.batch_id,
+      s.round,
+      s.committee_id,
+      s.block_height,
+      s.timestamp
+    ]);
+
+    const query = format(`
+      INSERT INTO signature_participation (validator_address, batch_id, round, committee_id, block_height, timestamp)
+      VALUES %L
+      ON CONFLICT DO NOTHING
+    `, values);
+
+    await this.pool.query(query);
+  }
+
+  async getValidatorSignatures(validatorAddress: string, startTime: number, endTime: number): Promise<any[]> {
     const query = `
-      SELECT * FROM batches
-      WHERE committee_id = $1 AND round = $2
+      SELECT * FROM signature_participation
+      WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
     `;
-    const result = await this.pool.query(query, [committeeId, round.toString()]);
+    const result = await this.pool.query(query, [validatorAddress, startTime, endTime]);
     return result.rows;
-  } */
+  }
 }
 
 export default SnarkOSDBService;

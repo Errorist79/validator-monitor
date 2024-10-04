@@ -2,6 +2,7 @@ import { AleoSDKService } from './AleoSDKService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
 import { PerformanceMetricsService } from './PerformanceMetricsService.js';
 import logger from '../utils/logger.js';
+import pLimit from 'p-limit';
 
 export class ValidatorService {
   constructor(
@@ -17,12 +18,14 @@ export class ValidatorService {
       const currentRound = BigInt(latestCommittee.starting_round);
 
       logger.info(`Retrieved ${validators.length} validators for status update`);
-
-      for (const validator of validators) {
-        const isActive = await this.checkValidatorActivity(validator.address);
-        logger.debug(`Validator ${validator.address} isActive: ${isActive}`);
-        await this.snarkOSDBService.updateValidatorStatus(validator.address, currentRound, isActive);
-      }
+      const limit = pLimit(5);
+      await Promise.all(validators.map(validator =>
+        limit(async () => {
+          const isActive = await this.checkValidatorActivity(validator.address);
+          logger.debug(`Validator ${validator.address} isActive: ${isActive}`);
+          await this.snarkOSDBService.updateValidatorStatus(validator.address, currentRound, isActive);
+        })
+      ));
 
       logger.info('Updated validator statuses successfully');
     } catch (error) {
@@ -32,19 +35,15 @@ export class ValidatorService {
   }
 
   private async checkValidatorActivity(validatorAddress: string): Promise<boolean> {
-    // ... mevcut kodlar ...
-
-    // Zaman damgalarını saniyeye çeviriyoruz
     const startTime = Math.floor(Date.now() / 1000) - 1 * 60 * 60; // Son 1 saat (saniye cinsinden)
     const endTime = Math.floor(Date.now() / 1000); // Şu an (saniye cinsinden)
 
     const recentBatches = await this.snarkOSDBService.getValidatorBatches(validatorAddress, startTime, endTime);
+    const recentSignatures = await this.snarkOSDBService.getValidatorSignatures(validatorAddress, startTime, endTime);
 
-    logger.debug(`Validator ${validatorAddress} son ${startTime} ile ${endTime} arasında ${recentBatches.length} batch işlemine sahip`);
+    logger.debug(`Validator ${validatorAddress} son ${startTime} ile ${endTime} arasında ${recentBatches.length} batch işlemine ve ${recentSignatures.length} imzaya sahip`);
 
-    return recentBatches.length > 0;
-
-    // ... mevcut kodlar ...
+    return recentBatches.length > 0 || recentSignatures.length > 0;
   }
 
   async getValidator(address: string): Promise<any> {

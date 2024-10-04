@@ -35,9 +35,10 @@ export const initBatch = (sequelize: Sequelize) => {
     indexes: [
       { fields: ['batch_id'] },
       { fields: ['author'] },
-      { fields: ['round'] },
       { fields: ['committee_id'] },
-      { fields: ['block_height'] }
+      { fields: ['round'] },
+      { fields: ['block_height'] },
+      { fields: ['timestamp'] },
     ]
   });
 };

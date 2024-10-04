@@ -17,6 +17,7 @@ export class BlockSyncService {
   private readonly RETRY_DELAY = 3000; // 3 saniye
   private readonly SYNC_START_BLOCK: number;
   private readonly SYNC_THRESHOLD = 10; // Eşik değeri, örneğin 10 blok
+  private currentBatchSize = 50; // Başlangıç değeri
 
   constructor(
     private aleoSDKService: AleoSDKService,
@@ -120,29 +121,21 @@ export class BlockSyncService {
   }
 
   private async getMappings(author: string): Promise<{
-    committeeMapping: CommitteeMapping;
-    bondedMapping: BondedMapping;
-    delegatedMapping: DelegatedMapping;
+    committeeMapping: CommitteeMapping | null;
+    bondedMapping: BondedMapping | null;
+    delegatedMapping: DelegatedMapping | null;
   }> {
     const cacheKey = `mappings_${author}`;
-    const cachedData = await this.cacheService.get(cacheKey);
-
-    if (cachedData) {
-      return cachedData;
-    }
-
-    const [committeeMapping, bondedMapping, delegatedMapping] = await Promise.all([
-      this.aleoSDKService.getCommitteeMapping(author),
-      this.aleoSDKService.getBondedMapping(author),
-      this.aleoSDKService.getDelegatedMapping(author)
-    ]);
+    let mappings = await this.cacheService.get<{
+      committeeMapping: CommitteeMapping | null;
+      bondedMapping: BondedMapping | null;
+      delegatedMapping: DelegatedMapping | null;
+    }>(cacheKey);
     
-    if (!committeeMapping || !bondedMapping || !delegatedMapping) {
-      throw new Error(`Failed to retrieve mapping for author ${author}`);
+    if (!mappings) {
+      mappings = await this.aleoSDKService.getMappings(author);
+      await this.cacheService.set(cacheKey, mappings, 3600); // 1 saat önbellekleme
     }
-    
-    const mappings = { committeeMapping, bondedMapping, delegatedMapping };
-    await this.cacheService.set(cacheKey, mappings, 2 * 60 * 60); // 2 saat TTL
     
     return mappings;
   }
@@ -152,74 +145,119 @@ export class BlockSyncService {
       const blockHeight = parseInt(block.header.metadata.height);
       logger.debug(`Processing batches and participation for block ${blockHeight}`);
 
+      const committeeMembers = [];
+      const batchInfosMap = new Map<string, any>();
+      const committeeParticipationsMap = new Map<string, any>();
+      const signatureParticipationsMap = new Map<string, any>();
+
       for (const roundKey in block.authority.subdag.subdag) {
-        const batches: APIBatch[] = block.authority.subdag.subdag[roundKey];
+        const batches = block.authority.subdag.subdag[roundKey];
         for (const batch of batches) {
+          const batchKey = batch.batch_header.batch_id;
           const author = batch.batch_header.author;
-          
-          const mappings = await this.getMappings(author);
 
-          if (!mappings.committeeMapping || !mappings.bondedMapping) {
-            logger.warn(`${author} için eksik eşleme verisi, blok yüksekliği ${blockHeight}`);
-            continue;
-          }
-
-          const { committeeMapping, bondedMapping, delegatedMapping } = mappings;
-          const totalStake = bondedMapping.microcredits + (delegatedMapping ? delegatedMapping.microcredits : BigInt(0));
-
-          await this.snarkOSDBService.insertOrUpdateCommitteeMember(
-            author,
-            blockHeight,
-            totalStake,
-            committeeMapping.is_open,
-            BigInt(committeeMapping.commission)
-          );
-
-          await this.saveBatchInfo(batch, blockHeight, parseInt(roundKey));
-           await this.saveCommitteeParticipation(
-             author,
-             batch.batch_header.committee_id,
-             parseInt(roundKey),
-             blockHeight,
-             Number(batch.batch_header.timestamp)
-           );
-
-          // Batch'in kendi imzasını kaydedelim
-          const batchSignature = batch.batch_header.signature;
-          if (batchSignature) {
-            const validatorAddress = getAddressFromSignature(batchSignature);
-
-            await this.snarkOSDBService.insertSignatureParticipation({
-              validator_address: validatorAddress,
-              batch_id: batch.batch_header.batch_id,
-              round: parseInt(roundKey),
-              committee_id: batch.batch_header.committee_id,
+          // Batch Infos
+          if (!batchInfosMap.has(batchKey)) {
+            batchInfosMap.set(batchKey, {
+              batch_id: batchKey,
+              author,
               block_height: blockHeight,
+              round: parseInt(roundKey),
               timestamp: Number(batch.batch_header.timestamp),
+              committee_id: batch.batch_header.committee_id || 'unknown' // Eğer committee_id yoksa 'unknown' kullan
             });
           }
 
-          // Diğer imzaları kaydedelim
-          if (batch.signatures) {
-            for (const signature of batch.signatures) {
-              const validatorAddress = getAddressFromSignature(signature);
+          try {
+            const mappings = await this.getMappings(author);
 
-              await this.snarkOSDBService.insertSignatureParticipation({
-                validator_address: validatorAddress,
-                batch_id: batch.batch_header.batch_id,
-                round: parseInt(roundKey),
+            if (!mappings.committeeMapping || !mappings.bondedMapping) {
+              logger.warn(`${author} için eksik eşleme verisi, blok yüksekliği ${blockHeight}`);
+              continue;
+            }
+
+            const { committeeMapping, bondedMapping, delegatedMapping } = mappings;
+            const totalStake = bondedMapping.microcredits + (delegatedMapping ? delegatedMapping.microcredits : BigInt(0));
+
+            // Verileri dizilere ekliyoruz
+            committeeMembers.push({
+              address: author,
+              first_seen_block: blockHeight, // Validator'ın ilk görüldüğü blok
+              last_seen_block: blockHeight,  // Validator'ın son görüldüğü blok
+              total_stake: totalStake.toString(),
+              is_open: committeeMapping.is_open,
+              commission: BigInt(committeeMapping.commission).toString(),
+              is_active: true,               // Varsayılan olarak aktif kabul edilebilir
+              block_height: blockHeight      // Mevcut blok yüksekliği
+            });
+
+            // Committee Participations
+            const committeeKey = `${author}_${roundKey}`;
+            if (!committeeParticipationsMap.has(committeeKey)) {
+              committeeParticipationsMap.set(committeeKey, {
+                validator_address: author,
                 committee_id: batch.batch_header.committee_id,
+                round: parseInt(roundKey),
                 block_height: blockHeight,
-                timestamp: Number(batch.batch_header.timestamp),
+                timestamp: Number(batch.batch_header.timestamp)
               });
             }
+
+            // Signature Participations
+            if (batch.signatures) {
+              for (const signature of batch.signatures) {
+                const validatorAddress = getAddressFromSignature(signature);
+                const signatureKey = `${validatorAddress}_${batchKey}`;
+                if (!signatureParticipationsMap.has(signatureKey)) {
+                  signatureParticipationsMap.set(signatureKey, {
+                    validator_address: validatorAddress,
+                    batch_id: batchKey,
+                    round: parseInt(roundKey),
+                    committee_id: batch.batch_header.committee_id,
+                    block_height: blockHeight,
+                    timestamp: Number(batch.batch_header.timestamp),
+                  });
+                }
+              }
+            }
+
+            // Batch'in kendi imzası
+            if (batch.batch_header.signature) {
+              const validatorAddress = getAddressFromSignature(batch.batch_header.signature);
+              const signatureKey = `${validatorAddress}_${batchKey}`;
+              if (!signatureParticipationsMap.has(signatureKey)) {
+                signatureParticipationsMap.set(signatureKey, {
+                  validator_address: validatorAddress,
+                  batch_id: batchKey,
+                  round: parseInt(roundKey),
+                  committee_id: batch.batch_header.committee_id,
+                  block_height: blockHeight,
+                  timestamp: Number(batch.batch_header.timestamp),
+                });
+              }
+            }
+          } catch (error) {
+            logger.error(`Error processing batch for author ${batch.batch_header.author}:`, error);
           }
         }
       }
 
-      logger.info(`${blockHeight} bloğu için toplu işlemler ve katılım işlendi`);
+      // Map'leri dizilere dönüştürüyoruz
+      const batchInfos = Array.from(batchInfosMap.values());
+      const committeeParticipations = Array.from(committeeParticipationsMap.values());
+      const signatureParticipations = Array.from(signatureParticipationsMap.values());
+
+      // Toplu veritabanı işlemlerini gerçekleştiriyoruz
+      await Promise.all([
+        this.snarkOSDBService.bulkInsertCommitteeMembers(committeeMembers),
+        this.snarkOSDBService.bulkInsertBatchInfos(batchInfos),
+        this.snarkOSDBService.bulkInsertCommitteeParticipations(committeeParticipations),
+        this.snarkOSDBService.bulkInsertSignatureParticipations(signatureParticipations)
+      ]);
+
+      logger.debug(`${blockHeight} bloğu için batch ve katılım işlemleri tamamlandı`);
     } catch (error) {
-      logger.error(`${block.block_hash} bloğu için toplu işlemler ve katılım işlenirken hata oluştu:`, error);
+      logger.error(`${block.block_hash} bloğu için batch ve katılım işlenirken hata oluştu:`, error);
       throw error;
     }
   }
@@ -299,6 +337,15 @@ export class BlockSyncService {
     } else {
       logger.info(`Data is not synchronized. Block difference: ${blockDifference}`);
       return false;
+    }
+  }
+
+  private adjustBatchSize(duration: number): void {
+    const targetDuration = 5000; // 5 saniye
+    if (duration < targetDuration) {
+      this.currentBatchSize = Math.min(this.currentBatchSize * 2, 1000); // Maksimum 1000
+    } else if (duration > targetDuration * 2) {
+      this.currentBatchSize = Math.max(Math.floor(this.currentBatchSize / 2), 10); // Minimum 10
     }
   }
 
