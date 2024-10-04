@@ -4,19 +4,23 @@ import { AleoSDKService } from '../../services/AleoSDKService';
 import { CommitteeParticipation } from '../../database/models/CommitteeParticipation.js';
 import { Batch } from '../../database/models/Batch.js';
 import { BlockSyncService } from '../../services/BlockSyncService.js';
+import { CacheService } from '../../services/CacheService.js';
+import { config } from '../../config/index.js';
 jest.mock('../../services/SnarkOSDBService');
 jest.mock('../../services/AleoSDKService');
-
+jest.mock('../../services/CacheService');
 describe('PerformanceMetricsService', () => {
   let performanceMetricsService: PerformanceMetricsService;
   let mockSnarkOSDBService: jest.Mocked<SnarkOSDBService>;
   let mockAleoSDKService: jest.Mocked<AleoSDKService>;
   let mockBlockSyncService: jest.Mocked<BlockSyncService>;
+  let mockCacheService: jest.Mocked<CacheService>;
   beforeEach(() => {
-    mockSnarkOSDBService = new SnarkOSDBService(mockAleoSDKService) as jest.Mocked<SnarkOSDBService>;
     mockAleoSDKService = new AleoSDKService('https://api.explorer.provable.com/v1', 'testnet') as jest.Mocked<AleoSDKService>;
-    mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService) as jest.Mocked<BlockSyncService>;
-    performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService, mockBlockSyncService);
+    mockSnarkOSDBService = new SnarkOSDBService(mockAleoSDKService) as jest.Mocked<SnarkOSDBService>;
+    mockCacheService = new CacheService(config.redis.url) as jest.Mocked<CacheService>;
+    mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService, mockCacheService) as jest.Mocked<BlockSyncService>;
+    performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService, mockBlockSyncService, mockCacheService);
   });
 
   describe('calculateUptime', () => {

@@ -16,6 +16,7 @@ import { NotFoundError, ValidationError } from './utils/errors.js';
 import BlockSyncService from './services/BlockSyncService.js';
 import RewardsService from './services/RewardsService.js';
 import syncEvents from './events/SyncEvents.js';
+import { CacheService } from './services/CacheService.js';
 
 const app = express();
 let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
@@ -24,10 +25,11 @@ let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
 logger.level = 'debug';
 
 logger.info(`Initializing AleoSDKService with URL: ${config.aleo.sdkUrl} and network type: ${config.aleo.networkType}`);
+const cacheService = new CacheService(config.redis.url);
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
 const snarkOSDBService = new SnarkOSDBService(aleoSDKService);
-const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService);
-const performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService);
+const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService, cacheService);
+const performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService, cacheService);
 const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, performanceMetricsService);
 const blockService = new BlockService(aleoSDKService, snarkOSDBService);
 const consensusService = new ConsensusService(aleoSDKService);

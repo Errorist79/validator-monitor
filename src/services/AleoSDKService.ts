@@ -139,7 +139,7 @@ export class AleoSDKService {
     }
   }
 
-  async getBondedMapping(address: string): Promise<BondedMapping | null> {
+  async getBondedMapping(address: string): Promise<BondedMapping> {
     try {
       const rawResult = await this.network.getProgramMappingValue("credits.aleo", "bonded", address);
       const result = this.parseRawResult(rawResult);
@@ -147,21 +147,24 @@ export class AleoSDKService {
 
       if (result === null || result === undefined) {
         logger.warn(`${address} için bağlı eşleme bulunamadı`);
-        return null;
+        throw new Error(`${address} için bağlı eşleme bulunamadı`);
       }
 
       if (typeof result === 'object' && result !== null) {
         const validator = 'validator' in result ? String(result.validator) : address;
         const microcredits = 'microcredits' in result ? BigInt(result.microcredits) : BigInt(0);
 
-        return { validator, microcredits };
+        return {
+          ...result,
+          microcredits: microcredits.toString(), // BigInt'i string'e dönüştür
+        };
       }
 
       logger.warn(`${address} için beklenmeyen bağlı eşleme formatı:`, JSON.stringify(result, null, 2));
-      return null;
+      throw new Error(`${address} için beklenmeyen bağlı eşleme formatı`);
     } catch (error) {
       logger.error(`${address} için bağlı eşleme alınırken hata oluştu:`, error);
-      return null;
+      throw error;
     }
   }
 

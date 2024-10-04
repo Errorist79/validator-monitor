@@ -8,6 +8,7 @@ import { config } from '../config/index.js';
 import { CommitteeMapping, BondedMapping, DelegatedMapping } from '../database/models/Mapping.js';
 import syncEvents from '../events/SyncEvents.js';
 import { initializeWasm, getAddressFromSignature } from 'aleo-address-derivation';
+import { CacheService } from './CacheService.js';
 
 export class BlockSyncService {
   private readonly SYNC_INTERVAL = 5000; // 5 saniye
@@ -15,21 +16,12 @@ export class BlockSyncService {
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_DELAY = 3000; // 3 saniye
   private readonly SYNC_START_BLOCK: number;
-
-  private mappingCache: Map<string, {
-    committeeMapping: CommitteeMapping;
-    bondedMapping: BondedMapping;
-    delegatedMapping: DelegatedMapping;
-    lastUpdated: number;
-  }> = new Map();
-
-  private readonly MAPPING_UPDATE_INTERVAL = 2 * 60 * 60 * 1000; // 2 saat
-
   private readonly SYNC_THRESHOLD = 10; // Eşik değeri, örneğin 10 blok
 
   constructor(
     private aleoSDKService: AleoSDKService,
-    private snarkOSDBService: SnarkOSDBService
+    private snarkOSDBService: SnarkOSDBService,
+    private cacheService: CacheService
   ) {
     this.SYNC_START_BLOCK = config.sync.startBlock;
     initializeWasm(); // WASM başlatma
@@ -132,15 +124,11 @@ export class BlockSyncService {
     bondedMapping: BondedMapping;
     delegatedMapping: DelegatedMapping;
   }> {
-    const cachedData = this.mappingCache.get(author);
-    const now = Date.now();
+    const cacheKey = `mappings_${author}`;
+    const cachedData = await this.cacheService.get(cacheKey);
 
-    if (cachedData && (now - cachedData.lastUpdated) < this.MAPPING_UPDATE_INTERVAL) {
-      return {
-        committeeMapping: cachedData.committeeMapping,
-        bondedMapping: cachedData.bondedMapping,
-        delegatedMapping: cachedData.delegatedMapping
-      };
+    if (cachedData) {
+      return cachedData;
     }
 
     const [committeeMapping, bondedMapping, delegatedMapping] = await Promise.all([
@@ -153,14 +141,10 @@ export class BlockSyncService {
       throw new Error(`Failed to retrieve mapping for author ${author}`);
     }
     
-    this.mappingCache.set(author, {
-      committeeMapping,
-      bondedMapping,
-      delegatedMapping,
-      lastUpdated: now
-    });
+    const mappings = { committeeMapping, bondedMapping, delegatedMapping };
+    await this.cacheService.set(cacheKey, mappings, 2 * 60 * 60); // 2 saat TTL
     
-    return { committeeMapping, bondedMapping, delegatedMapping };
+    return mappings;
   }
 
   private async processBatchesAndParticipation(block: APIBlock): Promise<void> {

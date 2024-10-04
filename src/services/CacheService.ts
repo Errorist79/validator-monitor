@@ -1,39 +1,11 @@
-import NodeCache from 'node-cache';
 import Redis from 'ioredis';
 import logger from '../utils/logger.js';
 
 interface ICacheStrategy {
-  set(key: string, value: any, ttl?: number): void | Promise<void>;
-  get(key: string): any | Promise<any>;
-  del(key: string): void | Promise<void>;
-  flush(): void | Promise<void>;
-}
-
-class NodeCacheStrategy implements ICacheStrategy {
-  private cache: NodeCache;
-
-  constructor(ttlSeconds: number) {
-    this.cache = new NodeCache({ stdTTL: ttlSeconds, checkperiod: ttlSeconds * 0.2 });
-  }
-  set(key: string, value: any, ttl?: number): void {
-    if (ttl !== undefined) {
-      this.cache.set(key, value, ttl);
-    } else {
-      this.cache.set(key, value);
-    }
-  }
-
-  get(key: string): any {
-    return this.cache.get(key);
-  }
-
-  del(key: string): void {
-    this.cache.del(key);
-  }
-
-  flush(): void {
-    this.cache.flushAll();
-  }
+  set(key: string, value: any, ttl?: number): Promise<void>;
+  get(key: string): Promise<any>;
+  del(key: string): Promise<void>;
+  flush(): Promise<void>;
 }
 
 class RedisCacheStrategy implements ICacheStrategy {
@@ -44,7 +16,9 @@ class RedisCacheStrategy implements ICacheStrategy {
   }
 
   async set(key: string, value: any, ttl?: number): Promise<void> {
-    const serializedValue = JSON.stringify(value);
+    const serializedValue = JSON.stringify(value, (_, v) =>
+      typeof v === 'bigint' ? v.toString() : v
+    );
     if (ttl) {
       await this.redis.setex(key, ttl, serializedValue);
     } else {
@@ -54,7 +28,9 @@ class RedisCacheStrategy implements ICacheStrategy {
 
   async get(key: string): Promise<any> {
     const value = await this.redis.get(key);
-    return value ? JSON.parse(value) : null;
+    return value ? JSON.parse(value, (_, v) =>
+      typeof v === 'string' && /^\d+n$/.test(v) ? BigInt(v.slice(0, -1)) : v
+    ) : null;
   }
 
   async del(key: string): Promise<void> {
@@ -67,38 +43,31 @@ class RedisCacheStrategy implements ICacheStrategy {
 }
 
 export class CacheService {
-  private strategies: ICacheStrategy[];
+  private strategy: ICacheStrategy;
 
-  constructor(ttlSeconds: number, redisUrl: string) {
-    this.strategies = [
-      new NodeCacheStrategy(ttlSeconds),
-      new RedisCacheStrategy(redisUrl)
-    ];
+  constructor(redisUrl: string) {
+    this.strategy = new RedisCacheStrategy(redisUrl);
   }
 
   async set(key: string, value: any, ttl?: number): Promise<void> {
-    await Promise.all(this.strategies.map(strategy => strategy.set(key, value, ttl)));
+    await this.strategy.set(key, value, ttl);
   }
 
   async get(key: string): Promise<any> {
-    for (const strategy of this.strategies) {
-      const value = await strategy.get(key);
-      if (value !== null) return value;
-    }
-    return null;
+    return await this.strategy.get(key);
   }
 
   async del(key: string): Promise<void> {
-    await Promise.all(this.strategies.map(strategy => strategy.del(key)));
+    await this.strategy.del(key);
   }
 
   async flush(): Promise<void> {
-    await Promise.all(this.strategies.map(strategy => strategy.flush()));
+    await this.strategy.flush();
   }
 
   async cacheCommittee(committee: any): Promise<void> {
     try {
-      await this.set('latest_committee', committee);
+      await this.set('latest_committee', committee, 60 * 60); // 1 saat TTL
     } catch (error) {
       logger.error('Error caching committee:', error);
     }
