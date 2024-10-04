@@ -11,7 +11,7 @@ import { AlertService } from './services/AlertService.js';
 import cron from 'node-cron';
 import { SnarkOSDBService } from './services/SnarkOSDBService.js';
 import { config } from './config/index.js';
-import AleoSDKService from './services/AleoSDKService.js';
+import { AleoSDKService } from './services/AleoSDKService.js';
 import { NotFoundError, ValidationError } from './utils/errors.js';
 import BlockSyncService from './services/BlockSyncService.js';
 import RewardsService from './services/RewardsService.js';
@@ -24,10 +24,17 @@ let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
 logger.level = 'debug';
 
 logger.info(`Initializing AleoSDKService with URL: ${config.aleo.sdkUrl} and network type: ${config.aleo.networkType}`);
-const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
+const aleoSDKService = AleoSDKService.getInstance(
+  config.aleo.sdkUrl,
+  config.aleo.networkType as 'mainnet' | 'testnet'
+);
 const snarkOSDBService = new SnarkOSDBService(aleoSDKService);
-const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService);
-const performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService);
+const blockSyncService = BlockSyncService.getInstance(aleoSDKService, snarkOSDBService);
+const performanceMetricsService = PerformanceMetricsService.getInstance(
+  snarkOSDBService,
+  aleoSDKService,
+  blockSyncService
+);
 const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, performanceMetricsService);
 const blockService = new BlockService(aleoSDKService, snarkOSDBService);
 const consensusService = new ConsensusService(aleoSDKService);
@@ -103,12 +110,12 @@ async function initialize() {
         logger.error('Error during block synchronization:', error);
       }
     }
+    startBlockSync();
 
     // Her 10 saniyede bir blokları senkronize ediyoruz
-    setInterval(startBlockSync, 10000);
 
     // Uptime hesaplamalarını her dakika tekrarla
-    cron.schedule('* * * * *', async () => {
+    cron.schedule('*/10 * * * *', async () => {
       try {
         logger.info('Scheduled uptime calculation started.');
         await performanceMetricsService.updateUptimes();
@@ -278,14 +285,3 @@ app.get('/api/test/raw-latest-block', async (req, res) => {
     res.status(500).json({ error: 'Failed to check alerts' });
   }
 }); */
-
-// Uptime hesaplamalarını her saat başı tekrarla
-cron.schedule('* * * * *', async () => {
-  try {
-    logger.info('Scheduled uptime calculation started.');
-    await performanceMetricsService.updateUptimes();
-    logger.info('Scheduled uptime calculation completed.');
-  } catch (error) {
-    logger.error('Error during scheduled uptime calculation:', error);
-  }
-});

@@ -377,34 +377,61 @@ export class SnarkOSDBService {
       INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count, block_reward)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (height) DO UPDATE SET
-      hash = EXCLUDED.hash,
-      previous_hash = EXCLUDED.previous_hash,
-      round = EXCLUDED.round,
-      timestamp = EXCLUDED.timestamp,
-      transactions_count = EXCLUDED.transactions_count,
-      block_reward = EXCLUDED.block_reward
+        hash = EXCLUDED.hash,
+        previous_hash = EXCLUDED.previous_hash,
+        round = EXCLUDED.round,
+        timestamp = EXCLUDED.timestamp,
+        transactions_count = EXCLUDED.transactions_count,
+        block_reward = EXCLUDED.block_reward
     `;
-    await this.pool.query(query, [
-      block.height,
-      block.hash,
-      block.previous_hash,
-      block.round,
-      block.timestamp,
-      block.transactions_count,
-      block.block_reward !== undefined ? block.block_reward.toString() : null
-    ]);
+    try {
+      await this.pool.query(query, [
+        block.height,
+        block.hash,
+        block.previous_hash,
+        block.round,
+        block.timestamp,
+        block.transactions_count,
+        block.block_reward
+      ]);
+      logger.debug(`Upserted block at height ${block.height}`);
+    } catch (error) {
+      logger.error(`Error upserting block at height ${block.height}:`, error);
+      throw error;
+    }
   }
 
   async upsertBlocks(blocks: BlockAttributes[]): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      const query = `
+        INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count, block_reward)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (height) DO UPDATE SET
+          hash = EXCLUDED.hash,
+          previous_hash = EXCLUDED.previous_hash,
+          round = EXCLUDED.round,
+          timestamp = EXCLUDED.timestamp,
+          transactions_count = EXCLUDED.transactions_count,
+          block_reward = EXCLUDED.block_reward
+      `;
       for (const block of blocks) {
-        await this.upsertBlock(block);
+        await client.query(query, [
+          block.height,
+          block.hash,
+          block.previous_hash,
+          block.round,
+          block.timestamp,
+          block.transactions_count,
+          block.block_reward
+        ]);
       }
       await client.query('COMMIT');
+      logger.debug(`Upserted ${blocks.length} blocks`);
     } catch (error) {
       await client.query('ROLLBACK');
+      logger.error(`Error upserting blocks:`, error);
       throw error;
     } finally {
       client.release();
@@ -1087,27 +1114,44 @@ export class SnarkOSDBService {
     return result.rows[0].max_height || 0;
   }
 
-  async insertSignatureParticipation(participation: {
-    validator_address: string;
-    batch_id: string;
-    round: number;
-    committee_id: string;
-    block_height: number;
-    timestamp: number;
-  }): Promise<void> {
+  async insertSignatureParticipations(participations: any[]): Promise<void> {
+    if (participations.length === 0) {
+      return;
+    }
+
     const query = `
-      INSERT INTO signature_participation (validator_address, batch_id, round, committee_id, block_height, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6)
+      INSERT INTO signature_participation (
+        validator_address,
+        batch_id,
+        round,
+        committee_id,
+        block_height,
+        timestamp
+      ) VALUES
+      ${participations
+        .map(
+          (_, index) =>
+            `($${index * 6 + 1}, $${index * 6 + 2}, $${index * 6 + 3}, $${index * 6 + 4}, $${index * 6 + 5}, $${index * 6 + 6})`
+        )
+        .join(', ')}
       ON CONFLICT DO NOTHING
     `;
-    await this.pool.query(query, [
-      participation.validator_address,
-      participation.batch_id,
-      participation.round,
-      participation.committee_id,
-      participation.block_height,
-      participation.timestamp,
+
+    const values = participations.flatMap(p => [
+      p.validator_address,
+      p.batch_id,
+      p.round,
+      p.committee_id,
+      p.block_height,
+      p.timestamp,
     ]);
+
+    try {
+      await this.pool.query(query, values);
+    } catch (error) {
+      logger.error('Error inserting signature participations:', error);
+      throw error;
+    }
   }
 
   async getSignatureParticipation(
@@ -1128,6 +1172,12 @@ export class SnarkOSDBService {
     }));
   }
 
+  public async getAllValidatorAddresses(): Promise<string[]> {
+    const query = 'SELECT DISTINCT author FROM batches';
+    const result = await this.pool.query(query);
+    return result.rows.map(row => row.author);
+  }
+  
   /* async updateValidatorStatus(address: string, currentRound: bigint, isActive: boolean): Promise<void> {
     const query = `
       INSERT INTO validator_status (address, last_active_round, consecutive_inactive_rounds, is_active, last_updated)

@@ -47,7 +47,7 @@ describe('AleoSDKService', () => {
       getLatestBlock: jest.fn(),
     } as unknown as jest.Mocked<AleoNetworkClient>;
     (AleoNetworkClient as jest.Mock).mockImplementation(() => mockNetworkClient);
-    service = new AleoSDKService('https://api.explorer.provable.com/v1', 'testnet');
+    service = AleoSDKService.getInstance('https://api.explorer.provable.com/v1', 'testnet');
   });
 
   describe('getLatestBlock', () => {

@@ -21,10 +21,10 @@ describe('Uptime Calculation', () => {
   beforeAll(async () => {
     // Test veritabanı bağlantısını kur
     process.env.TEST_DATABASE_URL = 'postgres://postgres:admin@localhost:5432/testdb';
+    aleoSDKService = AleoSDKService.getInstance(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
     snarkOSDBService = new SnarkOSDBService(aleoSDKService);
-    aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet'); // AleoSDKService örneği oluştur
-    mockBlockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService) as jest.Mocked<BlockSyncService>;
-    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, mockBlockSyncService);
+    mockBlockSyncService = jest.mocked(BlockSyncService.getInstance(aleoSDKService, snarkOSDBService));
+    performanceMetricsService = PerformanceMetricsService.getInstance(snarkOSDBService, aleoSDKService, mockBlockSyncService);
 
     // Test veritabanını hazırla
     await snarkOSDBService.initializeDatabase();

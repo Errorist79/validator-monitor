@@ -8,6 +8,8 @@ import { metrics } from '../utils/metrics.js';
 import { getBigIntFromString } from '../utils/helpers.js';
 import { BondedMapping, CommitteeMapping, LatestCommittee, DelegatedMapping } from '../database/models/Mapping.js';
 import logger from '../utils/logger.js';
+import { CacheService } from './CacheService.js';
+import { config } from '../config/index.js';
 
 // Özel tip tanımlamaları
 type CommitteeResult = {
@@ -21,12 +23,35 @@ type BondedResult = {
 };
 
 export class AleoSDKService {
+  private static instance: AleoSDKService;
+  private cacheService: CacheService;
+
+  private constructor(
+    private readonly sdkUrl: string,
+    private readonly networkType: 'mainnet' | 'testnet'
+  ) {
+    this.network = new AleoNetworkClient(sdkUrl);
+    this.cacheService = new CacheService(2 * 60 * 60, config.redis.url); // 2 saat TTL
+    logger.info(`AleoSDKService initialized with ${networkType} at ${sdkUrl}`);
+  }
+
+  public static getInstance(
+    sdkUrl: string,
+    networkType: 'mainnet' | 'testnet'
+  ): AleoSDKService {
+    if (!AleoSDKService.instance) {
+      AleoSDKService.instance = new AleoSDKService(sdkUrl, networkType);
+    }
+    return AleoSDKService.instance;
+  }
+
   private network: AleoNetworkClient;
 
-  constructor(networkUrl: string, networkType: 'mainnet' | 'testnet') {
-    this.network = new AleoNetworkClient(networkUrl);
-    logger.info(`AleoSDKService initialized with ${networkType} at ${networkUrl}`);
-  }
+  private committeeMappingCache: Map<string, CommitteeMapping> = new Map();
+  private bondedMappingCache: Map<string, BondedMapping> = new Map();
+  private delegatedMappingCache: Map<string, DelegatedMapping> = new Map();
+  private readonly MAPPING_CACHE_TTL = 2 * 60 * 60 * 1000; // 2 saat
+  private mappingCacheTimestamps: Map<string, number> = new Map();
 
   async getLatestBlock(): Promise<BlockAttributes | null> {
     try {
@@ -114,70 +139,110 @@ export class AleoSDKService {
   }
 
   async getCommitteeMapping(address: string): Promise<CommitteeMapping | null> {
+    const cacheKey = `committee_mapping:${address}`;
+    const cachedMapping = await this.cacheService.get<CommitteeMapping>(cacheKey);
+
+    if (cachedMapping) {
+      logger.debug(`Cache hit for committee mapping of ${address}`);
+      return cachedMapping;
+    }
+
     try {
       const rawResult = await this.network.getProgramMappingValue("credits.aleo", "committee", address);
+      logger.debug(`Raw committee mapping result for ${address}:`, rawResult);
+
       const result = this.parseRawResult(rawResult);
-      logger.debug(`Raw committee mapping result for (${address}):`, JSON.stringify(result, null, 2));
+      logger.debug(`Parsed committee mapping result for ${address}:`, result);
 
-      if (result === null || result === undefined) {
-        logger.warn(`${address} için komite eşlemesi bulunamadı`);
-        return null;
+      if (result && typeof result === 'object') {
+        const isOpen = result.is_open === true || result.is_open === 'true';
+        const commissionValue = result.commission || '0';
+        const commission = Number(commissionValue.toString().replace(/\D/g, ''));
+
+        const mapping: CommitteeMapping = {
+          is_open: isOpen,
+          commission: commission
+        };
+
+        await this.cacheService.set(cacheKey, mapping);
+        return mapping;
       }
 
-      if (typeof result === 'object' && result !== null) {
-        const isOpen = 'is_open' in result ? Boolean(result.is_open) : false;
-        const commission = 'commission' in result ? Number(result.commission) : 0;
-
-        return { is_open: isOpen, commission };
-      }
-
-      logger.warn(`${address} için beklenmeyen komite eşleme formatı:`, JSON.stringify(result, null, 2));
+      logger.warn(`No committee mapping found or invalid format for address ${address}`);
       return null;
     } catch (error) {
-      logger.error(`${address} için komite eşlemesi alınırken hata oluştu:`, error);
+      logger.error(`Error fetching committee mapping for ${address}:`, error);
       return null;
     }
   }
 
   async getBondedMapping(address: string): Promise<BondedMapping | null> {
+    const cacheKey = `bonded_mapping:${address}`;
+    const cachedMapping = await this.cacheService.get<BondedMapping>(cacheKey);
+
+    if (cachedMapping) {
+      logger.debug(`Cache hit for bonded mapping of ${address}`);
+      return cachedMapping;
+    }
+
     try {
       const rawResult = await this.network.getProgramMappingValue("credits.aleo", "bonded", address);
+      logger.debug(`Raw bonded mapping result for ${address}:`, rawResult);
+
       const result = this.parseRawResult(rawResult);
-      logger.debug(`Ham bağlı eşleme sonucu (${address}):`, JSON.stringify(result, null, 2));
+      logger.debug(`Parsed bonded mapping result for ${address}:`, result);
 
-      if (result === null || result === undefined) {
-        logger.warn(`${address} için bağlı eşleme bulunamadı`);
-        return null;
+      if (result && typeof result === 'object') {
+        const microcreditsValue = result.microcredits || '0';
+        const microcredits = BigInt(microcreditsValue.toString().replace(/\D/g, ''));
+
+        const mapping: BondedMapping = {
+          validator: result.validator || address,
+          microcredits: microcredits
+        };
+
+        await this.cacheService.set(cacheKey, mapping);
+        return mapping;
       }
 
-      if (typeof result === 'object' && result !== null) {
-        const validator = 'validator' in result ? String(result.validator) : address;
-        const microcredits = 'microcredits' in result ? BigInt(result.microcredits) : BigInt(0);
-
-        return { validator, microcredits };
-      }
-
-      logger.warn(`${address} için beklenmeyen bağlı eşleme formatı:`, JSON.stringify(result, null, 2));
+      logger.warn(`No bonded mapping found or invalid format for address ${address}`);
       return null;
     } catch (error) {
-      logger.error(`${address} için bağlı eşleme alınırken hata oluştu:`, error);
+      logger.error(`Error fetching bonded mapping for ${address}:`, error);
       return null;
     }
   }
 
   async getDelegatedMapping(address: string): Promise<DelegatedMapping | null> {
-    try {
-      const result = await this.network.getProgramMappingValue("credits.aleo", "delegated", address);
-      logger.debug(`Raw delegated mapping result for ${address}:`, result);
+    const cacheKey = `delegated_mapping:${address}`;
+    const cachedMapping = await this.cacheService.get<DelegatedMapping>(cacheKey);
 
-      if (typeof result === 'string') {
-        return {
-          delegator: address,
-          microcredits: BigInt(result.replace('u64', ''))
+    if (cachedMapping) {
+      logger.debug(`Cache hit for delegated mapping of ${address}`);
+      return cachedMapping;
+    }
+
+    try {
+      const rawResult = await this.network.getProgramMappingValue("credits.aleo", "delegated", address);
+      logger.debug(`Raw delegated mapping result for ${address}:`, rawResult);
+
+      const result = this.parseRawResult(rawResult);
+      logger.debug(`Parsed delegated mapping result for ${address}:`, result);
+
+      if (result && typeof result === 'object') {
+        const microcreditsValue = result.microcredits || '0';
+        const microcredits = BigInt(microcreditsValue.toString().replace(/\D/g, ''));
+
+        const mapping: DelegatedMapping = {
+          delegator: result.delegator || address,
+          microcredits: microcredits
         };
+
+        await this.cacheService.set(cacheKey, mapping);
+        return mapping;
       }
 
-      logger.warn(`Unexpected delegated mapping format for ${address}:`, result);
+      logger.warn(`No delegated mapping found or invalid format for address ${address}`);
       return null;
     } catch (error) {
       logger.error(`Error fetching delegated mapping for ${address}:`, error);
@@ -186,57 +251,42 @@ export class AleoSDKService {
   }
 
   private parseRawResult(rawResult: any): any {
-    if (typeof rawResult !== 'string') {
+    if (typeof rawResult === 'object' && rawResult !== null) {
+      // Gelen veri zaten bir nesne ise, doğrudan döndür
       return rawResult;
     }
-  
-    let cleanedResult = rawResult;
-  
-    try {
-      // Anahtar isimlerini çift tırnak içine al
-      cleanedResult = cleanedResult.replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":');
-  
-      // Dize değerlerini çift tırnak içine al
-      cleanedResult = cleanedResult.replace(/:\s*([a-zA-Z0-9_]+)([,}])/g, ': "$1"$2');
-  
-      // Sayısal değerlerdeki tip eklerini kaldır
-      cleanedResult = cleanedResult.replace(/(\d+)u(8|16|32|64|128)/g, '$1');
-  
-      return JSON.parse(cleanedResult);
-    } catch (error) {
-      logger.error('Error parsing raw result:', error);
-      logger.error('Cleaned result:', cleanedResult);
-      return null; // Ayrıştırma başarısız olursa null döndür
-    }
-  }
 
-  private parseCommission(commission: any): number | null {
-    if (typeof commission === 'number') {
-      return commission;
-    }
-    logger.warn(`Unexpected commission format:`, commission);
-    return null;
-  }
-  
-  private parseMicrocredits(microcredits: any): bigint | null {
-    if (typeof microcredits === 'number') {
-      return BigInt(microcredits);
-    }
-    if (typeof microcredits === 'string') {
-      return BigInt(microcredits);
-    }
-    logger.warn(`Unexpected microcredits format:`, microcredits);
-    return null;
-  }
+    if (typeof rawResult === 'string') {
+      try {
+        // Veriyi doğrudan JSON.parse ile ayrıştırmayı deneyin
+        const parsedResult = JSON.parse(rawResult);
+        return parsedResult;
+      } catch {
+        // Ayrıştırma başarısız olursa, regex ile temizlemeyi deneyin
+        try {
+          let cleanedResult = rawResult;
 
-  async getTotalNetworkStake(): Promise<bigint> {
-    try {
-      const committee = await this.getLatestCommittee();
-      return BigInt(committee.total_stake);
-    } catch (error) {
-      logger.error('Error calculating total network stake:', error);
-      throw error;
+          // Anahtar isimlerini çift tırnak içine al
+          cleanedResult = cleanedResult.replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":');
+
+          // Dize değerlerini çift tırnak içine al
+          cleanedResult = cleanedResult.replace(/:\s*([a-zA-Z0-9_]+)([,}])/g, ': "$1"$2');
+
+          // Sayısal değerlerdeki tip eklerini kaldır
+          cleanedResult = cleanedResult.replace(/(\d+)u(16|32|64|128)/g, '$1');
+
+          const parsedResult = JSON.parse(cleanedResult);
+          return parsedResult;
+        } catch (error) {
+          logger.error('Error parsing raw result with regex:', error);
+          logger.error('Raw result:', rawResult);
+          return null;
+        }
+      }
     }
+
+    logger.error('Unsupported raw result format:', rawResult);
+    return null;
   }
 
   async getTransactionsInMempool(): Promise<any[]> {
@@ -391,10 +441,22 @@ export class AleoSDKService {
     try {
       logger.debug(`Fetching block range from ${startHeight} to ${endHeight}`);
       const blocks = await this.network.getBlockRange(startHeight, endHeight);
-      if (blocks instanceof Error) {
-        throw blocks;
+
+      if (!blocks || blocks instanceof Error) {
+        throw new Error('Failed to fetch block range');
       }
-      return blocks.map(this.convertToAPIBlock);
+
+      // Convert raw blocks to APIBlock format
+      const apiBlocks = blocks.map((block: any) => {
+        if (block) {
+          return this.convertToAPIBlock(block);
+        } else {
+          logger.warn('Received undefined block in block range');
+          return null;
+        }
+      }).filter((block): block is APIBlock => block !== null);
+
+      return apiBlocks;
     } catch (error) {
       logger.error(`Error fetching block range from ${startHeight} to ${endHeight}:`, error);
       throw new Error(`Failed to get block range from ${startHeight} to ${endHeight}`);

@@ -13,10 +13,19 @@ describe('PerformanceMetricsService', () => {
   let mockAleoSDKService: jest.Mocked<AleoSDKService>;
   let mockBlockSyncService: jest.Mocked<BlockSyncService>;
   beforeEach(() => {
-    mockSnarkOSDBService = new SnarkOSDBService(mockAleoSDKService) as jest.Mocked<SnarkOSDBService>;
-    mockAleoSDKService = new AleoSDKService('https://api.explorer.provable.com/v1', 'testnet') as jest.Mocked<AleoSDKService>;
-    mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService) as jest.Mocked<BlockSyncService>;
-    performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService, mockBlockSyncService);
+    mockAleoSDKService = {
+      // Gerekli metodları ve özellikleri burada mock'layın
+    } as jest.Mocked<AleoSDKService>;
+
+    mockSnarkOSDBService = {
+      // Gerekli metodları ve özellikleri burada mock'layın
+    } as jest.Mocked<SnarkOSDBService>;
+
+    mockBlockSyncService = {
+      // Gerekli metodları ve özellikleri burada mock'layın
+    } as jest.Mocked<BlockSyncService>;
+
+    performanceMetricsService = PerformanceMetricsService.getInstance(mockSnarkOSDBService, mockAleoSDKService, mockBlockSyncService);
   });
 
   describe('calculateUptime', () => {
