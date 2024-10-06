@@ -3,88 +3,103 @@ import { SnarkOSDBService } from './SnarkOSDBService.js';
 import { AleoSDKService } from './AleoSDKService.js';
 import logger from '../utils/logger.js';
 import { config } from '../config/index.js';
-import { CommitteeParticipation } from '../database/models/CommitteeParticipation.js';
-import { Batch } from '../database/models/Batch.js';
-import { UptimeSnapshotAttributes } from '@/database/models/UptimeSnapshot.js';
 import syncEvents from '../events/SyncEvents.js';
-import { initializeWasm, getAddressFromSignature } from 'aleo-address-derivation';
 import { BlockSyncService } from './BlockSyncService.js';
+import { UptimeSnapshotAttributes } from '../database/models/UptimeSnapshot.js';
+import pLimit from 'p-limit';
 
 export class PerformanceMetricsService {
+  private lastProcessedHeight: number = 0;
+  private isInitialSyncCompleted: boolean = false;
+  private readonly SYNC_START_BLOCK: number;
+
   constructor(
-    private readonly snarkOSDBService: SnarkOSDBService,
-    private readonly aleoSDKService: AleoSDKService,
-    private readonly blockSyncService: BlockSyncService,
-    private readonly cacheService: CacheService
+    private snarkOSDBService: SnarkOSDBService,
+    private aleoSDKService: AleoSDKService,
+    private blockSyncService: BlockSyncService,
+    private cacheService: CacheService
   ) {
-    // 'dataSynchronized' olayını dinliyoruz
-    syncEvents.on('dataSynchronized', async () => {
-      try {
-        const isSynchronized = await this.blockSyncService.isDataSynchronized();
-        if (isSynchronized) {
-          logger.info('Data is sufficiently synchronized. Starting uptime calculations.');
-          await this.updateUptimes();
-        } else {
-          logger.info('Data is not sufficiently synchronized. Skipping uptime calculations.');
-        }
-      } catch (error) {
-        logger.error('Error during uptime calculations:', error);
+    this.SYNC_START_BLOCK = config.sync.startBlock;
+    this.setupEventListeners();
+  }
+
+  private setupEventListeners(): void {
+    syncEvents.on('initialSyncCompleted', async () => {
+      this.isInitialSyncCompleted = true;
+      await this.performFullUptimeCalculation();
+    });
+
+    syncEvents.on('regularSyncCompleted', async () => {
+      if (this.isInitialSyncCompleted) {
+        await this.performIncrementalUptimeCalculation();
+      }
+    });
+
+    syncEvents.on('batchAndParticipationProcessed', async ({ startHeight, endHeight }) => {
+      if (this.isInitialSyncCompleted) {
+        await this.updateUptimes(startHeight, endHeight);
       }
     });
   }
 
-  async updateUptimes(): Promise<void> {
+  private async performFullUptimeCalculation(): Promise<void> {
+    const latestBlockHeight = await this.blockSyncService.getLatestSyncedBlockHeight();
+    await this.updateUptimes(this.SYNC_START_BLOCK, latestBlockHeight);
+  }
+
+  private async performIncrementalUptimeCalculation(): Promise<void> {
+    const latestBlockHeight = await this.blockSyncService.getLatestSyncedBlockHeight();
+    await this.updateUptimes(this.lastProcessedHeight + 1, latestBlockHeight);
+  }
+
+  async updateUptimes(startHeight: number, endHeight: number): Promise<void> {
     try {
+      if (startHeight <= this.lastProcessedHeight) {
+        startHeight = this.lastProcessedHeight + 1;
+      }
+
+      if (startHeight > endHeight) {
+        logger.info('No new blocks to process for uptime calculation.');
+        return;
+      }
+
       const validators = await this.snarkOSDBService.getActiveValidators();
       const currentRound = await this.aleoSDKService.getCurrentRound();
 
-      logger.info(`Uptime güncelleme başladı. Aktif validator sayısı: ${validators.length}, Mevcut tur: ${currentRound}`);
+      logger.info(`Uptime güncelleme başladı. Aktif validator sayısı: ${validators.length}, Mevcut tur: ${currentRound}, Blok aralığı: ${startHeight}-${endHeight}`);
 
-      for (const validator of validators) {
-        await this.calculateAndUpdateUptime(validator, currentRound);
-      }
+      const concurrency = 5; // Eşzamanlı işlem sayısı
+      const limit = pLimit(concurrency);
 
-      logger.info('Uptime güncelleme tamamlandı.');
+      await Promise.all(validators.map(validator => 
+        limit(() => this.calculateAndUpdateUptime(validator, BigInt(startHeight), BigInt(endHeight)))
+      ));
+
+      this.lastProcessedHeight = endHeight;
+      logger.info(`Uptime güncelleme tamamlandı. Son işlenen blok yüksekliği: ${this.lastProcessedHeight}`);
     } catch (error) {
       logger.error('Uptime güncelleme hatası:', error);
       throw error;
     }
   }
 
-  private async calculateAndUpdateUptime(validatorAddress: string, currentRound: bigint): Promise<void> {
+  private async calculateAndUpdateUptime(validatorAddress: string, startRound: bigint, endRound: bigint): Promise<void> {
     try {
-      const calculationRoundSpan = BigInt(config.uptime.calculationRoundSpan);
-      const startRoundCandidate = currentRound > calculationRoundSpan ? currentRound - calculationRoundSpan : BigInt(0);
+      logger.debug(`Validator ${validatorAddress}: Calculating uptime from round ${startRound} to ${endRound}.`);
 
-      const earliestRound = await this.snarkOSDBService.getEarliestValidatorRound(validatorAddress);
-      const startRound = earliestRound ? (earliestRound > startRoundCandidate ? earliestRound : startRoundCandidate) : startRoundCandidate;
-
-      if (startRound >= currentRound) {
-        logger.warn(`Validator ${validatorAddress}: startRound (${startRound}) >= currentRound (${currentRound}).`);
-        return;
-      }
-
-      logger.debug(`Validator ${validatorAddress}: Calculating uptime from round ${startRound} to ${currentRound}.`);
-
-      // Toplam komiteleri alıyoruz
-      const totalCommitteesList = await this.snarkOSDBService.getTotalCommittees(startRound, currentRound);
-
+      const totalCommitteesList = await this.snarkOSDBService.getTotalCommittees(startRound, endRound);
       const totalCommitteesCount = totalCommitteesList.length;
 
-      logger.debug(`Validator ${validatorAddress}: Total committees count between rounds ${startRound} and ${currentRound}: ${totalCommitteesCount}`);
+      logger.debug(`Validator ${validatorAddress}: Total committees count between rounds ${startRound} and ${endRound}: ${totalCommitteesCount}`);
 
       if (totalCommitteesCount === 0) {
-        logger.warn(`Validator ${validatorAddress}: No committees found between rounds ${startRound} and ${currentRound}.`);
+        logger.warn(`Validator ${validatorAddress}: No committees found between rounds ${startRound} and ${endRound}.`);
         return;
       }
 
-      // Validator'ın batch katılımlarını alıyoruz
-      const validatorBatchParticipation = await this.snarkOSDBService.getValidatorParticipation(validatorAddress, startRound, currentRound);
+      const validatorBatchParticipation = await this.snarkOSDBService.getValidatorParticipation(validatorAddress, startRound, endRound);
+      const validatorSignatureParticipation = await this.snarkOSDBService.getSignatureParticipation(validatorAddress, startRound, endRound);
 
-      // Validator'ın imza katılımlarını alıyoruz
-      const validatorSignatureParticipation = await this.snarkOSDBService.getSignatureParticipation(validatorAddress, startRound, currentRound);
-
-      // Uptime hesaplamasında batch ve imza katılımlarını birleştirme
       const participatedCommittees = new Map<string, Set<bigint>>();
 
       for (const vp of validatorBatchParticipation) {
@@ -105,7 +120,6 @@ export class PerformanceMetricsService {
 
       for (const committee of totalCommitteesList) {
         const validatorRounds = participatedCommittees.get(committee.committee_id) || new Set<bigint>();
-
         const intersection = committee.rounds.filter((round: bigint) => validatorRounds.has(round));
 
         if (intersection.length > 0) {
@@ -117,11 +131,10 @@ export class PerformanceMetricsService {
 
       const uptimePercentage = (participatedCommitteesCount / totalCommitteesCount) * 100;
 
-      // Uptime değerini güncelliyoruz
       await this.snarkOSDBService.updateValidatorUptime(
         validatorAddress,
         startRound,
-        currentRound,
+        endRound,
         BigInt(totalCommitteesCount),
         BigInt(participatedCommitteesCount),
         uptimePercentage
@@ -130,7 +143,7 @@ export class PerformanceMetricsService {
       const uptimeSnapshot: Omit<UptimeSnapshotAttributes, 'id'> = {
         validator_address: validatorAddress,
         start_round: startRound,
-        end_round: currentRound,
+        end_round: endRound,
         total_rounds: totalCommitteesCount,
         participated_rounds: participatedCommitteesCount,
         uptime_percentage: uptimePercentage,
@@ -143,18 +156,6 @@ export class PerformanceMetricsService {
     } catch (error) {
       logger.error(`Validator ${validatorAddress}: Error calculating uptime:`, error);
       throw error;
-    }
-  }
-
-  private async getLastCalculatedRound(validatorAddress: string): Promise<bigint> {
-    const lastSnapshot = await this.snarkOSDBService.getLastUptimeSnapshot(validatorAddress);
-
-    if (lastSnapshot) {
-      return lastSnapshot.end_round + BigInt(1);
-    } else {
-      // Eğer önceki bir hesaplama yoksa, en eski turu alın
-      const earliestRound = await this.snarkOSDBService.getEarliestValidatorRound(validatorAddress);
-      return earliestRound ? earliestRound : BigInt(0);
     }
   }
 

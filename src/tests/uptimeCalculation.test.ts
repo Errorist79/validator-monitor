@@ -35,19 +35,25 @@ describe('Uptime Calculation', () => {
   });
 
   it('should calculate uptime correctly', async () => {
-    const uptime = await performanceMetricsService.updateUptimes();
+    const startHeight = 1000000;
+    const endHeight = 1000720; // Örnek olarak 720 blok ekliyoruz
+    const uptime = await performanceMetricsService.updateUptimes(startHeight, endHeight);
     expect(uptime).toBeGreaterThan(0);
     expect(uptime).toBeLessThanOrEqual(100);
   });
 
   it('should calculate uptime for last 1 hour correctly', async () => {
-    const uptimeLast1Hour = await performanceMetricsService.updateUptimes();
+    const startHeight = 1000000;
+    const endHeight = 1000360; // Örnek olarak 1 saatlik blok sayısı
+    const uptimeLast1Hour = await performanceMetricsService.updateUptimes(startHeight, endHeight);
     expect(uptimeLast1Hour).toBeGreaterThan(0);
     expect(uptimeLast1Hour).toBeLessThanOrEqual(100);
   });
 
   it('should calculate uptime for last 24 hours correctly', async () => {
-    const uptimeLast24Hours = await performanceMetricsService.updateUptimes();
+    const startHeight = 1000000;
+    const endHeight = 1008640; // Örnek olarak 24 saatlik blok sayısı
+    const uptimeLast24Hours = await performanceMetricsService.updateUptimes(startHeight, endHeight);
     expect(uptimeLast24Hours).toBeGreaterThan(0);
     expect(uptimeLast24Hours).toBeLessThanOrEqual(100);
   });

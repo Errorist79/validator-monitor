@@ -519,6 +519,10 @@ export class SnarkOSDBService {
     }
   }
 
+  async getLatestProcessedBlockHeight(): Promise<number> {
+    const result = await this.pool.query('SELECT MAX(block_height) as max_height FROM committee_participation');
+    return result.rows[0].max_height || 0;
+  }
 
   async updateValidatorBlockProduction(address: string, blockReward: bigint): Promise<void> {
     try {

@@ -39,7 +39,9 @@ describe('PerformanceMetricsService', () => {
       mockSnarkOSDBService.getValidatorBatches.mockResolvedValue(mockBatches);
       mockSnarkOSDBService.getCommitteeSizeForRound.mockResolvedValue({ committee_size: 10 });
 
-      const result = await performanceMetricsService.updateUptimes();
+      const startHeight = 1;
+      const endHeight = 2;
+      const result = await performanceMetricsService.updateUptimes(startHeight, endHeight);
       
       // Beklenen batch sayısı: (1000 / 5 / 10) + (1000 / 5 / 10) = 20 + 20 = 40
       // Gerçek batch sayısı: 2 + 1 = 3

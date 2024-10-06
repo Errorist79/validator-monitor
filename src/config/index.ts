@@ -22,6 +22,8 @@ const config = {
         calculationTimeFrame: 86400, // 24 saat
         averageBatchInterval: 5, // saniye cinsinden ortalama batch aralığı
         calculationRoundSpan: parseInt(process.env.CALCULATION_ROUND_SPAN || '500', 10),
+        calculationDelay: 60000, // 1 dakika (milisaniye cinsinden)
+        calculationInterval: 3600000, // Her saat (milisaniye cinsinden)
     },
     redis: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',
