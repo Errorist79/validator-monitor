@@ -110,7 +110,7 @@ async function initialize() {
     setInterval(startBlockSync, 10000);
 
     // Uptime hesaplamalarını her dakika tekrarla
-    cron.schedule('* * * * *', async () => {
+    cron.schedule('*/2 * * * *', async () => {
       try {
         logger.info('Scheduled uptime calculation started.');
         await performanceMetricsService.updateUptimes();
@@ -280,17 +280,6 @@ app.get('/api/test/raw-latest-block', async (req, res) => {
     res.status(500).json({ error: 'Failed to check alerts' });
   }
 }); */
-
-// Uptime hesaplamalarını her saat başı tekrarla
-cron.schedule('* * * * *', async () => {
-  try {
-    logger.info('Scheduled uptime calculation started.');
-    await performanceMetricsService.updateUptimes();
-    logger.info('Scheduled uptime calculation completed.');
-  } catch (error) {
-    logger.error('Error during scheduled uptime calculation:', error);
-  }
-});
 
 // Her 5 dakikada bir validator statülerini güncelle
 cron.schedule('*/5 * * * *', async () => {

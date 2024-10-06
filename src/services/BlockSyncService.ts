@@ -103,11 +103,40 @@ export class BlockSyncService {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
+
+        const blockAttributesList = [];
+        const committeeMembers = [];
+        const batchInfos = [];
+        const committeeParticipations = [];
+        const signatureParticipations = [];
+
         for (const block of blocks) {
           const blockAttributes = this.aleoSDKService.convertToBlockAttributes(block);
-          await this.snarkOSDBService.upsertBlock(blockAttributes);
-          await this.processBatchesAndParticipation(block);
+          blockAttributesList.push(blockAttributes);
+
+          // Batches ve katılımlar için verileri topluyoruz
+          const { 
+            committeeMembers: cm, 
+            batchInfos: bi, 
+            committeeParticipations: cp, 
+            signatureParticipations: sp 
+          } = await this.extractBatchAndParticipationData(block);
+
+          committeeMembers.push(...cm);
+          batchInfos.push(...bi);
+          committeeParticipations.push(...cp);
+          signatureParticipations.push(...sp);
         }
+
+        // Veritabanı işlemlerini toplu olarak yapıyoruz
+        await Promise.all([
+          this.snarkOSDBService.upsertBlocks(blockAttributesList),
+          this.snarkOSDBService.bulkInsertCommitteeMembers(committeeMembers),
+          this.snarkOSDBService.bulkInsertBatchInfos(batchInfos),
+          this.snarkOSDBService.bulkInsertCommitteeParticipations(committeeParticipations),
+          this.snarkOSDBService.bulkInsertSignatureParticipations(signatureParticipations)
+        ]);
+
         logger.info(`Synchronized blocks from ${startHeight} to ${endHeight}`);
         return;
       } catch (error) {
@@ -262,65 +291,6 @@ export class BlockSyncService {
     }
   }
 
-  private async saveBatchInfo(batch: any, blockHeight: number, round: number): Promise<void> {
-    await this.snarkOSDBService.insertBatch({
-      batch_id: batch.batch_header.batch_id,
-      author: batch.batch_header.author,
-      round: round, // parseInt(batch.batch_header.round) yerine round parametresini kullanıyoruz
-      timestamp: parseInt(batch.batch_header.timestamp),
-      committee_id: batch.batch_header.committee_id,
-      block_height: blockHeight
-    });
-  }
-
-  private async saveCommitteeParticipation(
-    author: string, 
-    committeeId: string, 
-    round: number, 
-    blockHeight: number,
-    timestamp: number // timestamp parametresini ekledik
-  ): Promise<void> {
-    await this.snarkOSDBService.insertCommitteeParticipation({
-      validator_address: author,
-      committee_id: committeeId,
-      round: round,
-      block_height: blockHeight,
-      timestamp: timestamp // batch.batch_header.timestamp yerine direkt parametreyi kullanıyoruz
-    });
-  }
-
-  private async processBlock(apiBlock: APIBlock): Promise<void> {
-    try {
-      // Blok verilerini önce işleyin
-      const blockAttributes = this.aleoSDKService.convertToBlockAttributes(apiBlock);
-      await this.snarkOSDBService.upsertBlock(blockAttributes);
-
-      // Blok işlendikten sonra batch ve committee verilerini işleyin
-      await this.processBatchesAndParticipation(apiBlock);
-    } catch (error) {
-      logger.error(`Error processing block at height ${apiBlock.header.metadata.height}:`, error);
-      throw error;
-    }
-  }
-
-  private extractBatchesFromBlock(apiBlock: APIBlock): BatchAttributes[] {
-    const batches: BatchAttributes[] = [];
-    for (const roundKey in apiBlock.authority.subdag.subdag) {
-      const roundBatches = apiBlock.authority.subdag.subdag[roundKey];
-      for (const batch of roundBatches) {
-        batches.push({
-          batch_id: batch.batch_header.batch_id,
-          author: batch.batch_header.author,
-          round: parseInt(roundKey),
-          timestamp: Number(batch.batch_header.timestamp),
-          committee_id: batch.batch_header.committee_id,
-          block_height: parseInt(apiBlock.header.metadata.height)
-        });
-      }
-    }
-    return batches;
-  }
-
   public async isDataSynchronized(): Promise<boolean> {
     const latestSyncedBlock = await this.getLatestSyncedBlockHeight();
     const latestNetworkBlock = await this.aleoSDKService.getLatestBlockHeight();
@@ -349,7 +319,102 @@ export class BlockSyncService {
     }
   }
 
-  // getValidatorAddress fonksiyonunu kaldırıyoruz çünkü artık kullanılmıyor
+  private async extractBatchAndParticipationData(block: APIBlock): Promise<{
+    committeeMembers: any[],
+    batchInfos: any[],
+    committeeParticipations: any[],
+    signatureParticipations: any[]
+  }> {
+    const blockHeight = parseInt(block.header.metadata.height);
+
+    const committeeMembers = [];
+    const batchInfos = [];
+    const committeeParticipations = [];
+    const signatureParticipations = [];
+
+    for (const roundKey in block.authority.subdag.subdag) {
+      const batches = block.authority.subdag.subdag[roundKey];
+      for (const batch of batches) {
+        const batchKey = batch.batch_header.batch_id;
+        const author = batch.batch_header.author;
+
+        // Batch Infos
+        batchInfos.push({
+          batch_id: batchKey,
+          author,
+          block_height: blockHeight,
+          round: parseInt(roundKey),
+          timestamp: Number(batch.batch_header.timestamp),
+          committee_id: batch.batch_header.committee_id || 'unknown'
+        });
+
+        try {
+          const mappings = await this.getMappings(author);
+
+          if (!mappings.committeeMapping || !mappings.bondedMapping) {
+            logger.warn(`Missing mapping data for ${author} at block height ${blockHeight}`);
+            continue;
+          }
+
+          const { committeeMapping, bondedMapping, delegatedMapping } = mappings;
+          const totalStake = bondedMapping.microcredits + (delegatedMapping ? delegatedMapping.microcredits : BigInt(0));
+
+          // Committee Members
+          committeeMembers.push({
+            address: author,
+            first_seen_block: blockHeight,
+            last_seen_block: blockHeight,
+            total_stake: totalStake.toString(),
+            is_open: committeeMapping.is_open,
+            commission: BigInt(committeeMapping.commission).toString(),
+            is_active: true,
+            block_height: blockHeight
+          });
+
+          // Committee Participations
+          committeeParticipations.push({
+            validator_address: author,
+            committee_id: batch.batch_header.committee_id,
+            round: parseInt(roundKey),
+            block_height: blockHeight,
+            timestamp: Number(batch.batch_header.timestamp)
+          });
+
+          // Signature Participations
+          if (batch.signatures) {
+            for (const signature of batch.signatures) {
+              const validatorAddress = getAddressFromSignature(signature);
+              signatureParticipations.push({
+                validator_address: validatorAddress,
+                batch_id: batchKey,
+                round: parseInt(roundKey),
+                committee_id: batch.batch_header.committee_id,
+                block_height: blockHeight,
+                timestamp: Number(batch.batch_header.timestamp),
+              });
+            }
+          }
+
+          // Batch'in kendi imzası
+          if (batch.batch_header.signature) {
+            const validatorAddress = getAddressFromSignature(batch.batch_header.signature);
+            signatureParticipations.push({
+              validator_address: validatorAddress,
+              batch_id: batchKey,
+              round: parseInt(roundKey),
+              committee_id: batch.batch_header.committee_id,
+              block_height: blockHeight,
+              timestamp: Number(batch.batch_header.timestamp),
+            });
+          }
+        } catch (error) {
+          logger.error(`Error processing batch for author ${author}:`, error);
+        }
+      }
+    }
+
+    return { committeeMembers, batchInfos, committeeParticipations, signatureParticipations };
+  }
 }
 
 export default BlockSyncService;

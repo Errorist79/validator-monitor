@@ -31,16 +31,6 @@ export class PerformanceMetricsService {
         logger.error('Error during uptime calculations:', error);
       }
     });
-
-    // 'validatorsUpdated' olayını dinliyoruz
-    syncEvents.on('validatorsUpdated', async () => {
-      try {
-        logger.info('Validators updated event received. Starting uptime calculations.');
-        await this.updateUptimes();
-      } catch (error) {
-        logger.error('Error during uptime calculations:', error);
-      }
-    });
   }
 
   async updateUptimes(): Promise<void> {
