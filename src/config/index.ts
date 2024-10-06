@@ -29,7 +29,7 @@ const config = {
         url: process.env.REDIS_URL || 'redis://localhost:6379',
     },
     sync: {
-        startBlock: parseInt(process.env.SYNC_START_BLOCK || '0', 10),
+        startBlock: parseInt(process.env.SYNC_START_BLOCK || '0', 10), // veya başka bir başlangıç blok yüksekliği
     },
 };
 export { config };

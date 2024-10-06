@@ -346,7 +346,7 @@ export class AleoSDKService {
   }
 
   private convertToAPIBlock(rawBlock: any): APIBlock {
-    return {
+    const apiBlock = {
       height: rawBlock.header.metadata.height,
       block_hash: rawBlock.block_hash,
       previous_hash: rawBlock.previous_hash,
@@ -376,18 +376,20 @@ export class AleoSDKService {
       transactions: rawBlock.transactions,
       aborted_transaction_ids: rawBlock.aborted_transaction_ids
     };
+    return apiBlock;
   }
 
   public convertToBlockAttributes(apiBlock: APIBlock): BlockAttributes {
-    return {
+    const blockAttributes = {
       height: parseInt(apiBlock.header.metadata.height),
       hash: apiBlock.block_hash,
       previous_hash: apiBlock.previous_hash,
       round: parseInt(apiBlock.header.metadata.round),
-      timestamp: Number(apiBlock.header.metadata.timestamp), // Unix timestamp'i number olarak bırakıyoruz
+      timestamp: Number(apiBlock.header.metadata.timestamp),
       transactions_count: apiBlock.transactions.length,
       block_reward: apiBlock.ratifications.find(r => r.type === 'block_reward')?.amount ? Number(apiBlock.ratifications.find(r => r.type === 'block_reward')?.amount) : undefined
     };
+    return blockAttributes;
   }
 
   async getBlockRange(startHeight: number, endHeight: number): Promise<APIBlock[]> {

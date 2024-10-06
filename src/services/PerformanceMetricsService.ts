@@ -21,6 +21,7 @@ export class PerformanceMetricsService {
   ) {
     this.SYNC_START_BLOCK = config.sync.startBlock;
     this.setupEventListeners();
+    this.startPeriodicUptimeCalculation();
   }
 
   private setupEventListeners(): void {
@@ -40,6 +41,14 @@ export class PerformanceMetricsService {
         await this.updateUptimes(startHeight, endHeight);
       }
     });
+  }
+
+  private startPeriodicUptimeCalculation(): void {
+    setInterval(async () => {
+      if (this.isInitialSyncCompleted) {
+        await this.performIncrementalUptimeCalculation();
+      }
+    }, config.uptime.calculationInterval);
   }
 
   private async performFullUptimeCalculation(): Promise<void> {

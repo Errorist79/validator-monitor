@@ -401,30 +401,31 @@ export class SnarkOSDBService {
   }
 
   async upsertBlocks(blocks: BlockAttributes[]): Promise<void> {
-    const values = blocks.map(block => [
-        block.height,
-        block.hash,
-        block.previous_hash,
-        block.round,
-        block.timestamp,
-        block.transactions_count,
-        block.block_reward !== undefined ? block.block_reward.toString() : null
-    ]);
-
-    const query = format(`
-        INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count, block_reward)
-        VALUES %L
-        ON CONFLICT (height) DO UPDATE SET
-            hash = EXCLUDED.hash,
-            previous_hash = EXCLUDED.previous_hash,
-            round = EXCLUDED.round,
-            timestamp = EXCLUDED.timestamp,
-            transactions_count = EXCLUDED.transactions_count,
-            block_reward = EXCLUDED.block_reward
-    `, values);
-
-    await this.pool.query(query);
-}
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const block of blocks) {
+        await client.query(`
+          INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count, block_reward)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (height) DO UPDATE SET
+          hash = EXCLUDED.hash,
+          previous_hash = EXCLUDED.previous_hash,
+          round = EXCLUDED.round,
+          timestamp = EXCLUDED.timestamp,
+          transactions_count = EXCLUDED.transactions_count,
+          block_reward = EXCLUDED.block_reward
+        `, [block.height, block.hash, block.previous_hash, block.round, block.timestamp, block.transactions_count, block.block_reward]);
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error(`Error upserting blocks: ${error}`);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 
   async insertTransaction(transaction: any): Promise<void> {
     try {

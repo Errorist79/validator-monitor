@@ -48,7 +48,7 @@ export class BlockSyncService {
         throw new Error('En son ağ blok yüksekliği alınamadı');
       }
 
-      const startHeight = await this.getLatestSyncedBlockHeight();
+      const startHeight = Math.max(await this.getLatestSyncedBlockHeight(), this.SYNC_START_BLOCK);
       const endHeight = latestNetworkBlock;
 
       const batchSize = 1000; // Daha büyük batch boyutu
@@ -152,10 +152,9 @@ export class BlockSyncService {
   private async syncBlockRangeWithRetry(startHeight: number, endHeight: number): Promise<void> {
     for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
       try {
-        const startTime = Date.now();
         const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
-        await this.snarkOSDBService.upsertBlocks(blocks.map(this.aleoSDKService.convertToBlockAttributes));
-        this.adjustBatchSize(Date.now() - startTime);
+        const blockAttributes = blocks.map(block => this.aleoSDKService.convertToBlockAttributes(block));
+        await this.snarkOSDBService.upsertBlocks(blockAttributes);
         return;
       } catch (error) {
         logger.warn(`Deneme ${attempt} başarısız oldu, blok aralığı ${startHeight}-${endHeight}: ${error}`);
@@ -378,6 +377,16 @@ export class BlockSyncService {
     }
 
     return { committeeMembers, batchInfos, committeeParticipations, signatureParticipations };
+  }
+
+  public async startInitialSync(): Promise<void> {
+    try {
+      await this.syncLatestBlocks();
+      syncEvents.emit('initialSyncCompleted');
+    } catch (error) {
+      logger.error('Error during initial sync:', error);
+      throw error;
+    }
   }
 }
 

@@ -90,6 +90,7 @@ async function initialize() {
     logger.info('Database schema check and update completed');
 
     await tryConnect();
+    await blockSyncService.startInitialSync(); // İlk senkronizasyonu başlat
     startServer();
 
     // API rotalarını ekliyoruz
