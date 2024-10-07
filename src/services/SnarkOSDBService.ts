@@ -427,6 +427,35 @@ export class SnarkOSDBService {
     }
   }
 
+  
+async bulkInsertBlocks(blocks: BlockAttributes[]): Promise<void> {
+  if (blocks.length === 0) return;
+
+  const values = blocks.map(b => [
+    b.height,
+    b.hash,
+    b.previous_hash,
+    b.round,
+    b.timestamp,
+    b.transactions_count,
+    b.block_reward !== undefined ? b.block_reward.toString() : null
+  ]);
+
+  const query = format(`
+    INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count, block_reward)
+    VALUES %L
+    ON CONFLICT (height) DO UPDATE SET
+      hash = EXCLUDED.hash,
+      previous_hash = EXCLUDED.previous_hash,
+      round = EXCLUDED.round,
+      timestamp = EXCLUDED.timestamp,
+      transactions_count = EXCLUDED.transactions_count,
+      block_reward = EXCLUDED.block_reward
+  `, values);
+
+  await this.pool.query(query);
+}
+
   async insertTransaction(transaction: any): Promise<void> {
     try {
       await this.pool.query(

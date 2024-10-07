@@ -210,16 +210,13 @@ export class BlockSyncService {
     committeeParticipations: any[];
     signatureParticipations: any[];
   }> {
-    const blockAttributesList = [];
+    const blockAttributesList = blocks.map(block => this.aleoSDKService.convertToBlockAttributes(block));
     const committeeMembers = [];
     const batchInfos = [];
     const committeeParticipations = [];
     const signatureParticipations = [];
 
     for (const block of blocks) {
-      const blockAttributes = this.aleoSDKService.convertToBlockAttributes(block);
-      blockAttributesList.push(blockAttributes);
-
       const extractedData = await this.extractBatchAndParticipationData(block);
       committeeMembers.push(...extractedData.committeeMembers);
       batchInfos.push(...extractedData.batchInfos);
@@ -227,7 +224,13 @@ export class BlockSyncService {
       signatureParticipations.push(...extractedData.signatureParticipations);
     }
 
-    return { blockAttributesList, committeeMembers, batchInfos, committeeParticipations, signatureParticipations };
+    return {
+      blockAttributesList,
+      committeeMembers,
+      batchInfos,
+      committeeParticipations,
+      signatureParticipations
+    };
   }
 
   private async bulkInsertData(processedData: {
@@ -237,13 +240,20 @@ export class BlockSyncService {
     committeeParticipations: any[];
     signatureParticipations: any[];
   }): Promise<void> {
-    await Promise.all([
-      this.snarkOSDBService.upsertBlocks(processedData.blockAttributesList),
-      this.snarkOSDBService.bulkInsertCommitteeMembers(processedData.committeeMembers),
-      this.snarkOSDBService.bulkInsertBatchInfos(processedData.batchInfos),
-      this.snarkOSDBService.bulkInsertCommitteeParticipations(processedData.committeeParticipations),
-      this.snarkOSDBService.bulkInsertSignatureParticipations(processedData.signatureParticipations)
-    ]);
+    // 1. Önce blokları ekle
+    await this.snarkOSDBService.upsertBlocks(processedData.blockAttributesList);
+
+    // 2. Sonra batch'leri ekle
+    await this.snarkOSDBService.bulkInsertBatchInfos(processedData.batchInfos);
+
+    // 3. Komite üyelerini güncelle veya ekle
+    await this.snarkOSDBService.bulkInsertCommitteeMembers(processedData.committeeMembers);
+
+    // 4. Komite katılımlarını ekle
+    await this.snarkOSDBService.bulkInsertCommitteeParticipations(processedData.committeeParticipations);
+
+    // 5. İmza katılımlarını ekle
+    await this.snarkOSDBService.bulkInsertSignatureParticipations(processedData.signatureParticipations);
   }
 
   private async getMappings(author: string): Promise<{
@@ -310,6 +320,25 @@ export class BlockSyncService {
         const batchKey = batch.batch_header.batch_id;
         const author = batch.batch_header.author;
 
+        // Fetch mappings for the author
+        const mappings = await this.getMappings(author);
+
+        if (mappings.committeeMapping && mappings.bondedMapping) {
+          const totalStake = mappings.bondedMapping.microcredits + (mappings.delegatedMapping ? mappings.delegatedMapping.microcredits : BigInt(0));
+
+          // Committee Members
+          committeeMembers.push({
+            address: author,
+            first_seen_block: blockHeight,
+            last_seen_block: blockHeight,
+            total_stake: totalStake.toString(),
+            is_open: mappings.committeeMapping.is_open,
+            commission: BigInt(mappings.committeeMapping.commission).toString(),
+            is_active: true,
+            block_height: blockHeight
+          });
+        }
+
         // Batch Infos
         batchInfos.push({
           batch_id: batchKey,
@@ -320,56 +349,19 @@ export class BlockSyncService {
           committee_id: batch.batch_header.committee_id || 'unknown'
         });
 
-        try {
-          const mappings = await this.getMappings(author);
+        // Committee Participations
+        committeeParticipations.push({
+          validator_address: author,
+          committee_id: batch.batch_header.committee_id,
+          round: parseInt(roundKey),
+          block_height: blockHeight,
+          timestamp: Number(batch.batch_header.timestamp)
+        });
 
-          if (!mappings.committeeMapping || !mappings.bondedMapping) {
-            logger.warn(`Missing mapping data for ${author} at block height ${blockHeight}`);
-            continue;
-          }
-
-          const { committeeMapping, bondedMapping, delegatedMapping } = mappings;
-          const totalStake = bondedMapping.microcredits + (delegatedMapping ? delegatedMapping.microcredits : BigInt(0));
-
-          // Committee Members
-          committeeMembers.push({
-            address: author,
-            first_seen_block: blockHeight,
-            last_seen_block: blockHeight,
-            total_stake: totalStake.toString(),
-            is_open: committeeMapping.is_open,
-            commission: BigInt(committeeMapping.commission).toString(),
-            is_active: true,
-            block_height: blockHeight
-          });
-
-          // Committee Participations
-          committeeParticipations.push({
-            validator_address: author,
-            committee_id: batch.batch_header.committee_id,
-            round: parseInt(roundKey),
-            block_height: blockHeight,
-            timestamp: Number(batch.batch_header.timestamp)
-          });
-
-          // Signature Participations
-          if (batch.signatures) {
-            for (const signature of batch.signatures) {
-              const validatorAddress = getAddressFromSignature(signature);
-              signatureParticipations.push({
-                validator_address: validatorAddress,
-                batch_id: batchKey,
-                round: parseInt(roundKey),
-                committee_id: batch.batch_header.committee_id,
-                block_height: blockHeight,
-                timestamp: Number(batch.batch_header.timestamp),
-              });
-            }
-          }
-
-          // Batch'in kendi imzası
-          if (batch.batch_header.signature) {
-            const validatorAddress = getAddressFromSignature(batch.batch_header.signature);
+        // Signature Participations
+        if (batch.signatures) {
+          for (const signature of batch.signatures) {
+            const validatorAddress = getAddressFromSignature(signature);
             signatureParticipations.push({
               validator_address: validatorAddress,
               batch_id: batchKey,
@@ -379,8 +371,19 @@ export class BlockSyncService {
               timestamp: Number(batch.batch_header.timestamp),
             });
           }
-        } catch (error) {
-          logger.error(`Error processing batch for author ${author}:`, error);
+        }
+
+        // Batch'in kendi imzası
+        if (batch.batch_header.signature) {
+          const validatorAddress = getAddressFromSignature(batch.batch_header.signature);
+          signatureParticipations.push({
+            validator_address: validatorAddress,
+            batch_id: batchKey,
+            round: parseInt(roundKey),
+            committee_id: batch.batch_header.committee_id,
+            block_height: blockHeight,
+            timestamp: Number(batch.batch_header.timestamp),
+          });
         }
       }
     }
