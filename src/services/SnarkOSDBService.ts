@@ -718,18 +718,15 @@ export class SnarkOSDBService {
     ]);
   }
 
-  async getValidatorParticipation(validatorAddress: string, startRound: bigint, endRound: bigint): Promise<Array<{ committee_id: string; rounds: bigint[] }>> {
+  async getValidatorParticipation(validatorAddress: string, startRound: bigint, endRound: bigint): Promise<any[]> {
     const query = `
-      SELECT committee_id, array_agg(DISTINCT round ORDER BY round) as rounds
+      SELECT committee_id, array_agg(round) as rounds
       FROM committee_participation
       WHERE validator_address = $1 AND round BETWEEN $2 AND $3
       GROUP BY committee_id
     `;
     const result = await this.pool.query(query, [validatorAddress, startRound.toString(), endRound.toString()]);
-    return result.rows.map((row: any) => ({
-      committee_id: row.committee_id as string,
-      rounds: (row.rounds as any[]).map(r => BigInt(r))
-    }));
+    return result.rows;
   }
 
   async getLastUptimeSnapshot(address: string): Promise<any | null> {
@@ -1143,6 +1140,7 @@ export class SnarkOSDBService {
       rounds: (row.rounds as any[]).map((r: any) => BigInt(r))
     }));
   }
+  
 
   async bulkInsertCommitteeMembers(members: any[]): Promise<void> {
     if (members.length === 0) return;

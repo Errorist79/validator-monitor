@@ -41,7 +41,7 @@ describe('PerformanceMetricsService', () => {
 
       const startHeight = 1;
       const endHeight = 2;
-      const result = await performanceMetricsService.updateUptimes(startHeight, endHeight);
+      const result = await performanceMetricsService.updateUptimes();
       
       // Beklenen batch sayısı: (1000 / 5 / 10) + (1000 / 5 / 10) = 20 + 20 = 40
       // Gerçek batch sayısı: 2 + 1 = 3

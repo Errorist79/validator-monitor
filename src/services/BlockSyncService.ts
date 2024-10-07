@@ -33,6 +33,11 @@ export class BlockSyncService {
   ) {
     this.SYNC_START_BLOCK = config.sync.startBlock;
     initializeWasm(); // WASM başlatma
+    this.initializeLastSyncedBlockHeight();
+  }
+
+  private async initializeLastSyncedBlockHeight(): Promise<void> {
+    this.lastSyncedBlockHeight = await this.getLatestSyncedBlockHeight();
   }
 
   async startSyncProcess(): Promise<void> {
@@ -51,7 +56,7 @@ export class BlockSyncService {
       const startHeight = Math.max(await this.getLatestSyncedBlockHeight(), this.SYNC_START_BLOCK);
       const endHeight = latestNetworkBlock;
 
-      const batchSize = 1000; // Daha büyük batch boyutu
+      const batchSize = 50; // Daha büyük batch boyutu
       const concurrency = 5; // Eşzamanlı işlem sayısı
 
       const tasks = [];
@@ -82,8 +87,9 @@ export class BlockSyncService {
           throw new Error('En son ağ blok yüksekliği alınamadı');
         }
 
-        if (latestNetworkBlock > this.lastSyncedBlockHeight) {
-          await this.syncBlockRange(this.lastSyncedBlockHeight + 1, latestNetworkBlock);
+        const latestSyncedBlock = await this.getLatestSyncedBlockHeight();
+        if (latestNetworkBlock > latestSyncedBlock) {
+          await this.syncBlockRange(latestSyncedBlock + 1, latestNetworkBlock);
           this.lastSyncedBlockHeight = latestNetworkBlock;
           logger.info(`Bloklar ${latestNetworkBlock} yüksekliğine kadar senkronize edildi`);
         }
@@ -97,7 +103,6 @@ export class BlockSyncService {
         this.isSyncing = false;
       }
 
-      // Adaptif senkronizasyon aralığı
       const nextSyncDelay = this.calculateNextSyncDelay();
       setTimeout(adaptiveSync, nextSyncDelay);
     };
@@ -149,19 +154,23 @@ export class BlockSyncService {
     }
   }
 
-  private async syncBlockRangeWithRetry(startHeight: number, endHeight: number): Promise<void> {
-    for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
+  private async syncBlockRangeWithRetry(startHeight: number, endHeight: number, maxRetries = 3): Promise<void> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
-        const blockAttributes = blocks.map(block => this.aleoSDKService.convertToBlockAttributes(block));
-        await this.snarkOSDBService.upsertBlocks(blockAttributes);
-        return;
+        const batchSize = 30; // Daha küçük bir batch boyutu kullanıyoruz
+        for (let batchStart = startHeight; batchStart <= endHeight; batchStart += batchSize) {
+          const batchEnd = Math.min(batchStart + batchSize - 1, endHeight);
+          const blocks = await this.aleoSDKService.getBlockRange(batchStart, batchEnd);
+          await this.processBlocks(blocks);
+          await sleep(1000); // Her batch arasında 1 saniye bekliyoruz
+        }
+        return; // Başarılı olursa döngüden çık
       } catch (error) {
         logger.warn(`Deneme ${attempt} başarısız oldu, blok aralığı ${startHeight}-${endHeight}: ${error}`);
-        if (attempt === this.MAX_RETRIES) {
-          throw error;
+        if (attempt === maxRetries) {
+          throw error; // Son denemede de başarısız olursa hatayı fırlat
         }
-        await sleep(this.RETRY_DELAY * Math.pow(2, attempt - 1)); // Exponential backoff
+        await sleep(5000 * attempt); // Her denemede artan bekleme süresi
       }
     }
   }
@@ -221,7 +230,7 @@ export class BlockSyncService {
     return { blockAttributesList, committeeMembers, batchInfos, committeeParticipations, signatureParticipations };
   }
 
-  private async bulkInsertData(data: {
+  private async bulkInsertData(processedData: {
     blockAttributesList: any[];
     committeeMembers: any[];
     batchInfos: any[];
@@ -229,11 +238,11 @@ export class BlockSyncService {
     signatureParticipations: any[];
   }): Promise<void> {
     await Promise.all([
-      this.snarkOSDBService.upsertBlocks(data.blockAttributesList),
-      this.snarkOSDBService.bulkInsertCommitteeMembers(data.committeeMembers),
-      this.snarkOSDBService.bulkInsertBatchInfos(data.batchInfos),
-      this.snarkOSDBService.bulkInsertCommitteeParticipations(data.committeeParticipations),
-      this.snarkOSDBService.bulkInsertSignatureParticipations(data.signatureParticipations)
+      this.snarkOSDBService.upsertBlocks(processedData.blockAttributesList),
+      this.snarkOSDBService.bulkInsertCommitteeMembers(processedData.committeeMembers),
+      this.snarkOSDBService.bulkInsertBatchInfos(processedData.batchInfos),
+      this.snarkOSDBService.bulkInsertCommitteeParticipations(processedData.committeeParticipations),
+      this.snarkOSDBService.bulkInsertSignatureParticipations(processedData.signatureParticipations)
     ]);
   }
 

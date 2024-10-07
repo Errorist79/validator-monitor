@@ -79,6 +79,22 @@ export class AleoSDKService {
     }
   }
 
+  async getLatestRound(): Promise<bigint> {
+    try {
+      logger.debug('Fetching the latest block');
+      const latestBlock = await this.getLatestBlock();
+      if (!latestBlock) {
+        throw new Error('Unable to fetch latest block');
+      }
+      const latestRound = BigInt(latestBlock.round);
+      logger.debug(`Latest round fetched: ${latestRound}`);
+      return latestRound;
+    } catch (error) {
+      logger.error('Error fetching latest round:', error);
+      throw error;
+    }
+  }
+
   async getLatestCommittee(): Promise<LatestCommittee> {
     try {
       const result = await this.network.getLatestCommittee();
@@ -307,17 +323,15 @@ export class AleoSDKService {
     }
   }
 
-  async getLatestBlockHeight(): Promise<number | null> {
+  async getLatestBlockHeight(): Promise<number> {
     try {
-      const latestHeight = await this.network.getLatestHeight();
-      if (typeof latestHeight === 'number') {
-        return latestHeight;
-      } else {
-        logger.warn('Unexpected response format:', latestHeight);
-        return null;
+      const latestBlock = await this.getLatestBlock();
+      if (!latestBlock) {
+        throw new Error('Unable to fetch latest block');
       }
+      return latestBlock.height;
     } catch (error) {
-      this.handleAxiosError(error);
+      logger.error('Error fetching latest block height:', error);
       throw error;
     }
   }

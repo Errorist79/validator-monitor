@@ -90,7 +90,7 @@ async function initialize() {
     logger.info('Database schema check and update completed');
 
     await tryConnect();
-    await blockSyncService.startInitialSync(); // İlk senkronizasyonu başlat
+    await blockSyncService.startSyncProcess(); // İlk senkronizasyonu başlat
     startServer();
 
     // API rotalarını ekliyoruz
@@ -98,17 +98,8 @@ async function initialize() {
     app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService));
 
     // BlockSyncService'i düzenli olarak çalıştırıyoruz
-    async function startBlockSync() {
-      try {
-        await blockSyncService.syncLatestBlocks();
-        logger.info('Block synchronization completed.');
-      } catch (error) {
-        logger.error('Error during block synchronization:', error);
-      }
-    }
 
     // Her 10 saniyede bir blokları senkronize ediyoruz
-    setInterval(startBlockSync, 10000);
 
     // Eski uptime hesaplama cron job'ını ve manuel endpoint'i kaldırıyoruz
 
