@@ -30,6 +30,7 @@
     "ioredis": "^5.4.1",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",
+    "limiter": "^2.1.0",
     "mongoose": "^7.5.0",
     "node-cache": "^5.1.2",
     "node-cron": "^3.0.2",

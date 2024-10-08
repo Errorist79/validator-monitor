@@ -6,7 +6,7 @@ import { CommitteeParticipation } from '../database/models/CommitteeParticipatio
 import { Batch } from '../database/models/Batch.js';
 import { UptimeSnapshot, UptimeSnapshotAttributes} from '../database/models/UptimeSnapshot.js';
 import {AleoSDKService} from './AleoSDKService.js';
-import pkg from 'pg';
+import pkg, { PoolClient } from 'pg';
 import format from 'pg-format';
 const { Pool } = pkg;
 
@@ -36,6 +36,10 @@ export class SnarkOSDBService {
         done();
       }
     });
+  }
+
+  async getClient(): Promise<PoolClient> {
+    return await this.pool.connect();
   }
 
   async checkDatabaseStructure(): Promise<boolean> {
@@ -400,30 +404,44 @@ export class SnarkOSDBService {
     ]);
   }
 
-  async upsertBlocks(blocks: BlockAttributes[]): Promise<void> {
-    const client = await this.pool.connect();
+  async upsertBlocks(blocks: BlockAttributes[], client?: PoolClient): Promise<void> {
+    const useProvidedClient = !!client;
+    const queryClient = client || await this.getClient();
+
     try {
-      await client.query('BEGIN');
-      for (const block of blocks) {
-        await client.query(`
-          INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count, block_reward)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
-          ON CONFLICT (height) DO UPDATE SET
+      if (!useProvidedClient) await queryClient.query('BEGIN');
+
+      const values = blocks.map(b => [
+        b.height,
+        b.hash,
+        b.previous_hash,
+        b.round,
+        b.timestamp,
+        b.transactions_count,
+        b.block_reward !== undefined ? b.block_reward.toString() : null
+      ]);
+
+      const query = format(`
+        INSERT INTO blocks (height, hash, previous_hash, round, timestamp, transactions_count, block_reward)
+        VALUES %L
+        ON CONFLICT (height) DO UPDATE SET
           hash = EXCLUDED.hash,
           previous_hash = EXCLUDED.previous_hash,
           round = EXCLUDED.round,
           timestamp = EXCLUDED.timestamp,
           transactions_count = EXCLUDED.transactions_count,
           block_reward = EXCLUDED.block_reward
-        `, [block.height, block.hash, block.previous_hash, block.round, block.timestamp, block.transactions_count, block.block_reward]);
-      }
-      await client.query('COMMIT');
+      `, values);
+
+      await queryClient.query(query);
+
+      if (!useProvidedClient) await queryClient.query('COMMIT');
     } catch (error) {
-      await client.query('ROLLBACK');
+      if (!useProvidedClient) await queryClient.query('ROLLBACK');
       logger.error(`Error upserting blocks: ${error}`);
       throw error;
     } finally {
-      client.release();
+      if (!useProvidedClient) queryClient.release();
     }
   }
 
@@ -1171,17 +1189,42 @@ async bulkInsertBlocks(blocks: BlockAttributes[]): Promise<void> {
   }
   
 
-  async bulkInsertCommitteeMembers(members: any[]): Promise<void> {
+  async bulkInsertBatchInfos(batchInfos: any[], client: PoolClient): Promise<void> {
+    if (batchInfos.length === 0) return;
+
+    const uniqueBatchInfos = Array.from(new Map(batchInfos.map(item => [item.batch_id + '-' + item.round, item])).values());
+
+    const values = uniqueBatchInfos.map(b => [
+      b.batch_id,
+      b.author,
+      b.block_height,
+      b.round,
+      b.timestamp,
+      b.committee_id || 'unknown'
+    ]);
+
+    const query = format(`
+      INSERT INTO batches (batch_id, author, block_height, round, timestamp, committee_id)
+      VALUES %L
+      ON CONFLICT (batch_id, round) DO UPDATE SET
+        author = EXCLUDED.author,
+        block_height = EXCLUDED.block_height,
+        timestamp = EXCLUDED.timestamp,
+        committee_id = EXCLUDED.committee_id
+    `, values);
+
+    await client.query(query);
+  }
+
+  async bulkInsertCommitteeMembers(members: any[], client: PoolClient): Promise<void> {
     if (members.length === 0) return;
   
-    // Veri tekrarlarını önlemek için Map kullanıyoruz
     const uniqueMembersMap = new Map<string, any>();
     for (const member of members) {
       const key = member.address;
       if (!uniqueMembersMap.has(key)) {
         uniqueMembersMap.set(key, member);
       } else {
-        // Eğer aynı adres varsa, gerekli alanları güncelliyoruz
         const existingMember = uniqueMembersMap.get(key);
         existingMember.last_seen_block = Math.max(existingMember.last_seen_block, member.last_seen_block);
         existingMember.total_stake = member.total_stake;
@@ -1216,37 +1259,10 @@ async bulkInsertBlocks(blocks: BlockAttributes[]): Promise<void> {
         block_height = EXCLUDED.block_height
     `, values);
 
-    await this.pool.query(query);
+    await client.query(query);
   }
 
-  async bulkInsertBatchInfos(batchInfos: any[]): Promise<void> {
-    if (batchInfos.length === 0) return;
-
-    const uniqueBatchInfos = Array.from(new Map(batchInfos.map(item => [item.batch_id + '-' + item.round, item])).values());
-
-    const values = uniqueBatchInfos.map(b => [
-      b.batch_id,
-      b.author,
-      b.block_height,
-      b.round,
-      b.timestamp,
-      b.committee_id || 'unknown' // Eğer committee_id null ise 'unknown' kullan
-    ]);
-
-    const query = format(`
-      INSERT INTO batches (batch_id, author, block_height, round, timestamp, committee_id)
-      VALUES %L
-      ON CONFLICT (batch_id, round) DO UPDATE SET
-        author = EXCLUDED.author,
-        block_height = EXCLUDED.block_height,
-        timestamp = EXCLUDED.timestamp,
-        committee_id = EXCLUDED.committee_id
-    `, values);
-
-    await this.pool.query(query);
-  }
-
-  async bulkInsertCommitteeParticipations(participations: any[]): Promise<void> {
+  async bulkInsertCommitteeParticipations(participations: any[], client: PoolClient): Promise<void> {
     if (participations.length === 0) return;
 
     const values = participations.map(p => [
@@ -1263,10 +1279,10 @@ async bulkInsertBlocks(blocks: BlockAttributes[]): Promise<void> {
       ON CONFLICT DO NOTHING
     `, values);
 
-    await this.pool.query(query);
+    await client.query(query);
   }
 
-  async bulkInsertSignatureParticipations(signatures: any[]): Promise<void> {
+  async bulkInsertSignatureParticipations(signatures: any[], client: PoolClient): Promise<void> {
     if (signatures.length === 0) return;
 
     const values = signatures.map(s => [
@@ -1284,7 +1300,25 @@ async bulkInsertBlocks(blocks: BlockAttributes[]): Promise<void> {
       ON CONFLICT DO NOTHING
     `, values);
 
-    await this.pool.query(query);
+    await client.query(query);
+  }
+
+  async checkCommitteesAvailability(startHeight: number, endHeight: number): Promise<boolean> {
+    const query = 'SELECT COUNT(*) as count FROM committee_members WHERE block_height BETWEEN $1 AND $2';
+    const result = await this.pool.query(query, [startHeight, endHeight]);
+    return result.rows[0].count > 0;
+  }
+
+  async checkSignaturesAvailability(startHeight: number, endHeight: number): Promise<boolean> {
+    const query = 'SELECT COUNT(*) as count FROM signature_participation WHERE block_height BETWEEN $1 AND $2';
+    const result = await this.pool.query(query, [startHeight, endHeight]);
+    return result.rows[0].count > 0;
+  }
+
+  async checkBatchesAvailability(startHeight: number, endHeight: number): Promise<boolean> {
+    const query = 'SELECT COUNT(*) as count FROM batches WHERE block_height BETWEEN $1 AND $2';
+    const result = await this.pool.query(query, [startHeight, endHeight]);
+    return result.rows[0].count > 0;
   }
 
   async getValidatorSignatures(validatorAddress: string, startTime: number, endTime: number): Promise<any[]> {

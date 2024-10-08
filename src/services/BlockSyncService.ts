@@ -1,7 +1,7 @@
 import { AleoSDKService } from './AleoSDKService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
 import logger from '../utils/logger.js';
-import { APIBlock, APIBatch } from '../database/models/Block.js';
+import { APIBlock, APIBatch, BlockAttributes } from '../database/models/Block.js';
 import { BatchAttributes } from '../database/models/Batch.js';
 import { sleep } from '../utils/helpers.js';
 import { config } from '../config/index.js';
@@ -116,32 +116,32 @@ export class BlockSyncService {
   }
 
   public async syncLatestBlocks(): Promise<void> {
-    const latestSyncedBlock = await this.getLatestSyncedBlockHeight();
-    const latestNetworkBlock = await this.aleoSDKService.getLatestBlockHeight();
+    try {
+      const latestNetworkBlock = await this.aleoSDKService.getLatestBlockHeight();
+      if (latestNetworkBlock === null) {
+        logger.warn('En son ağ blok yüksekliği alınamadı');
+        return;
+      }
 
-    if (latestNetworkBlock === null) {
-      logger.warn('En son ağ blok yüksekliği alınamadı');
-      return;
+      let startHeight = await this.getLatestSyncedBlockHeight();
+      
+      if (latestNetworkBlock > startHeight) {
+        await this.syncBlockRange(startHeight + 1, latestNetworkBlock);
+        logger.info(`Bloklar ${latestNetworkBlock} yüksekliğine kadar senkronize edildi`);
+      } else {
+        logger.info('Bloklar zaten güncel');
+      }
+      
+      const isSynchronized = await this.isDataSynchronized();
+      if (isSynchronized) {
+        this.isFullySynchronized = true;
+        syncEvents.emit('dataSynchronized');
+      }
+      syncEvents.emit('validatorsUpdated');
+    } catch (error) {
+      logger.error('Error during block sync:', error);
+      throw error;
     }
-
-    if (latestNetworkBlock > latestSyncedBlock) {
-      await this.syncBlockRange(latestSyncedBlock + 1, latestNetworkBlock);
-      logger.info(`Bloklar ${latestNetworkBlock} yüksekliğine kadar senkronize edildi`);
-    } else {
-      logger.info('Bloklar zaten güncel');
-    }
-
-    const isSynchronized = await this.isDataSynchronized();
-    if (isSynchronized) {
-      this.isFullySynchronized = true;
-      syncEvents.emit('dataSynchronized');
-    }
-    syncEvents.emit('validatorsUpdated');
-  }
-
-  public async getLatestSyncedBlockHeight(): Promise<number> {
-    const latestSyncedBlock = await this.snarkOSDBService.getLatestBlockHeight();
-    return Math.max(latestSyncedBlock, this.SYNC_START_BLOCK - 1);
   }
 
   private async syncBlockRange(startHeight: number, endHeight: number): Promise<void> {
@@ -150,27 +150,24 @@ export class BlockSyncService {
       const batchEndHeight = Math.min(currentHeight + batchSize - 1, endHeight);
       await this.syncBlockRangeWithRetry(currentHeight, batchEndHeight);
       this.processingQueue.push({ startHeight: currentHeight, endHeight: batchEndHeight });
-      this.processQueue();
+      await this.processQueue();
     }
   }
 
   private async syncBlockRangeWithRetry(startHeight: number, endHeight: number, maxRetries = 3): Promise<void> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const batchSize = 30; // Daha küçük bir batch boyutu kullanıyoruz
-        for (let batchStart = startHeight; batchStart <= endHeight; batchStart += batchSize) {
-          const batchEnd = Math.min(batchStart + batchSize - 1, endHeight);
-          const blocks = await this.aleoSDKService.getBlockRange(batchStart, batchEnd);
-          await this.processBlocks(blocks);
-          await sleep(1000); // Her batch arasında 1 saniye bekliyoruz
-        }
-        return; // Başarılı olursa döngüden çık
+        const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
+        const processedData = await this.processBlocks(blocks);
+        await this.bulkInsertData(processedData);
+        logger.info(`${startHeight} ile ${endHeight} arasındaki bloklar senkronize edildi`);
+        return;
       } catch (error) {
         logger.warn(`Deneme ${attempt} başarısız oldu, blok aralığı ${startHeight}-${endHeight}: ${error}`);
         if (attempt === maxRetries) {
-          throw error; // Son denemede de başarısız olursa hatayı fırlat
+          throw error;
         }
-        await sleep(5000 * attempt); // Her denemede artan bekleme süresi
+        await sleep(5000 * attempt);
       }
     }
   }
@@ -234,26 +231,44 @@ export class BlockSyncService {
   }
 
   private async bulkInsertData(processedData: {
-    blockAttributesList: any[];
+    blockAttributesList: BlockAttributes[];
     committeeMembers: any[];
     batchInfos: any[];
     committeeParticipations: any[];
     signatureParticipations: any[];
   }): Promise<void> {
-    // 1. Önce blokları ekle
-    await this.snarkOSDBService.upsertBlocks(processedData.blockAttributesList);
+    const client = await this.snarkOSDBService.getClient();
+    try {
+      await client.query('BEGIN');
 
-    // 2. Sonra batch'leri ekle
-    await this.snarkOSDBService.bulkInsertBatchInfos(processedData.batchInfos);
+      if (processedData.blockAttributesList.length > 0) {
+        await this.snarkOSDBService.upsertBlocks(processedData.blockAttributesList, client);
+      }
 
-    // 3. Komite üyelerini güncelle veya ekle
-    await this.snarkOSDBService.bulkInsertCommitteeMembers(processedData.committeeMembers);
+      if (processedData.batchInfos.length > 0) {
+        await this.snarkOSDBService.bulkInsertBatchInfos(processedData.batchInfos, client);
+      }
 
-    // 4. Komite katılımlarını ekle
-    await this.snarkOSDBService.bulkInsertCommitteeParticipations(processedData.committeeParticipations);
+      if (processedData.committeeMembers.length > 0) {
+        await this.snarkOSDBService.bulkInsertCommitteeMembers(processedData.committeeMembers, client);
+      }
 
-    // 5. İmza katılımlarını ekle
-    await this.snarkOSDBService.bulkInsertSignatureParticipations(processedData.signatureParticipations);
+      if (processedData.committeeParticipations.length > 0) {
+        await this.snarkOSDBService.bulkInsertCommitteeParticipations(processedData.committeeParticipations, client);
+      }
+
+      if (processedData.signatureParticipations.length > 0) {
+        await this.snarkOSDBService.bulkInsertSignatureParticipations(processedData.signatureParticipations, client);
+      }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      logger.error('bulkInsertData işleminde hata:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   private async getMappings(author: string): Promise<{
@@ -267,12 +282,22 @@ export class BlockSyncService {
       bondedMapping: BondedMapping | null;
       delegatedMapping: DelegatedMapping | null;
     }>(cacheKey);
-    
+  
     if (!mappings) {
-      mappings = await this.aleoSDKService.getMappings(author);
-      await this.cacheService.set(cacheKey, mappings, 3600); // 1 saat önbellekleme
+      try {
+        mappings = await this.aleoSDKService.getMappings(author);
+        await this.cacheService.set(cacheKey, mappings, 3600); // 1 hour caching
+      } catch (error) {
+        logger.error(`Error retrieving mappings for author ${author}:`, error);
+        // Return default null mappings in case of an error
+        mappings = {
+          committeeMapping: null,
+          bondedMapping: null,
+          delegatedMapping: null
+        };
+      }
     }
-    
+  
     return mappings;
   }
 
@@ -290,15 +315,6 @@ export class BlockSyncService {
     const processDifference = latestSyncedBlock - latestProcessedBlock;
 
     return syncDifference <= this.SYNC_THRESHOLD && processDifference <= this.SYNC_THRESHOLD;
-  }
-
-  private adjustBatchSize(duration: number): void {
-    const targetDuration = 5000; // 5 saniye
-    if (duration < targetDuration) {
-      this.currentBatchSize = Math.min(this.currentBatchSize * 2, 200); // Maksimum 1000
-    } else if (duration > targetDuration * 2) {
-      this.currentBatchSize = Math.max(Math.floor(this.currentBatchSize / 2), 10); // Minimum 10
-    }
   }
 
   private async extractBatchAndParticipationData(block: APIBlock): Promise<{
@@ -383,7 +399,7 @@ export class BlockSyncService {
             committee_id: batch.batch_header.committee_id,
             block_height: blockHeight,
             timestamp: Number(batch.batch_header.timestamp),
-          });
+           });
         }
       }
     }
@@ -399,6 +415,11 @@ export class BlockSyncService {
       logger.error('Error during initial sync:', error);
       throw error;
     }
+  }
+
+  public async getLatestSyncedBlockHeight(): Promise<number> {
+    const latestSyncedBlock = await this.snarkOSDBService.getLatestBlockHeight();
+    return Math.max(latestSyncedBlock, this.SYNC_START_BLOCK - 1);
   }
 }
 

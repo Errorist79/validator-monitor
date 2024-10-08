@@ -25,6 +25,9 @@ const config = {
         calculationDelay: 60000, // 1 dakika (milisaniye cinsinden)
         calculationInterval: 3600000, // Her saat (milisaniye cinsinden)
     },
+    performance: {
+        concurrencyLimit: parseInt(process.env.CONCURRENCY_LIMIT || '10', 10),
+    },
     redis: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',
     },

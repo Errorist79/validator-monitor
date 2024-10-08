@@ -8,7 +8,10 @@ export interface CommitteeParticipationAttributes {
   block_height: number;
   timestamp: number;
 }
-
+export interface CommitteeData {
+  committee_id: string;
+  rounds: bigint[];
+}
 export class CommitteeParticipation extends Model<CommitteeParticipationAttributes> implements CommitteeParticipationAttributes {
   public id!: number;
   public validator_address!: string;
