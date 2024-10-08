@@ -12,16 +12,23 @@ import { CacheService } from './CacheService.js';
 import pLimit from 'p-limit';
 
 export class BlockSyncService {
-  private readonly SYNC_INTERVAL = 5000; // 5 saniye
-  private readonly BATCH_SIZE = 50;
+  private readonly INITIAL_BATCH_SIZE = 30;
+  private readonly MAX_BATCH_SIZE = 50;
+  private readonly MIN_BATCH_SIZE = 10;
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_DELAY = 3000; // 3 saniye
   private readonly SYNC_START_BLOCK: number;
-  private readonly SYNC_THRESHOLD = 10; // Eşik değeri, örneğin 10 blok
-  private currentBatchSize = 50; // Başlangıç değeri
+  private readonly SYNC_THRESHOLD = 10;
+  private readonly MAX_CONCURRENT_BATCHES = 5;
+  private readonly RATE_LIMIT = 10; // Saniyede maksimum istek sayısı
+  private readonly RATE_LIMIT_WINDOW = 1000; // 1 saniye
   private isSyncing: boolean = false;
   private isFullySynchronized: boolean = false;
   private lastSyncedBlockHeight: number = 0;
+  private previousSyncedBlockHeight: number = 0;
+  private currentBatchSize: number;
+  private lastRequestTime: number = 0;
+  private requestCount: number = 0;
 
   private processingQueue: Array<{ startHeight: number; endHeight: number }> = [];
   private isProcessing: boolean = false;
@@ -32,6 +39,7 @@ export class BlockSyncService {
     private cacheService: CacheService
   ) {
     this.SYNC_START_BLOCK = config.sync.startBlock;
+    this.currentBatchSize = this.INITIAL_BATCH_SIZE;
     initializeWasm(); // WASM başlatma
     this.initializeLastSyncedBlockHeight();
   }
@@ -56,22 +64,21 @@ export class BlockSyncService {
       const startHeight = Math.max(await this.getLatestSyncedBlockHeight(), this.SYNC_START_BLOCK);
       const endHeight = latestNetworkBlock;
 
-      const batchSize = 50; // Daha büyük batch boyutu
-      const concurrency = 5; // Eşzamanlı işlem sayısı
-
+      const limit = pLimit(this.MAX_CONCURRENT_BATCHES);
       const tasks = [];
-      for (let height = startHeight; height <= endHeight; height += batchSize) {
-        const batchEndHeight = Math.min(height + batchSize - 1, endHeight);
-        tasks.push(() => this.syncBlockRangeWithRetry(height, batchEndHeight));
+
+      for (let height = startHeight; height <= endHeight; height += this.currentBatchSize) {
+        const batchEndHeight = Math.min(height + this.currentBatchSize - 1, endHeight);
+        tasks.push(limit(() => this.syncBlockRangeWithRetry(height, batchEndHeight)));
       }
 
-      const limit = pLimit(concurrency);
-      await Promise.all(tasks.map(task => limit(task)));
+      await Promise.all(tasks);
 
       this.isFullySynchronized = true;
+      logger.info('Initial sync completed, starting full uptime calculation');
       syncEvents.emit('initialSyncCompleted');
     } catch (error) {
-      logger.error('Initial synchronization failed:', error);
+      logger.error('Initial sync failed:', error);
     } finally {
       this.isSyncing = false;
     }
@@ -89,6 +96,7 @@ export class BlockSyncService {
 
         const latestSyncedBlock = await this.getLatestSyncedBlockHeight();
         if (latestNetworkBlock > latestSyncedBlock) {
+          this.previousSyncedBlockHeight = this.lastSyncedBlockHeight;
           await this.syncBlockRange(latestSyncedBlock + 1, latestNetworkBlock);
           this.lastSyncedBlockHeight = latestNetworkBlock;
           logger.info(`Bloklar ${latestNetworkBlock} yüksekliğine kadar senkronize edildi`);
@@ -111,8 +119,24 @@ export class BlockSyncService {
   }
 
   private calculateNextSyncDelay(): number {
-    // Burada ağ durumuna göre adaptif bir gecikme hesaplayabilirsiniz
-    return this.SYNC_INTERVAL;
+    const baseInterval = 5000; // 5 saniye
+    const maxInterval = 60000; // 1 dakika
+    const minInterval = 1000; // 1 saniye
+
+    // Son senkronizasyon sırasında işlenen blok sayısını al
+    const processedBlocks = this.lastSyncedBlockHeight - this.previousSyncedBlockHeight;
+
+    // Ağ yoğunluğuna göre gecikmeyi ayarla
+    if (processedBlocks > 100) {
+      // Ağ çok yoğun, gecikmeyi azalt
+      return Math.max(baseInterval / 2, minInterval);
+    } else if (processedBlocks < 10) {
+      // Ağ yavaş, gecikmeyi artır
+      return Math.min(baseInterval * 2, maxInterval);
+    }
+
+    // Orta yoğunlukta, normal gecikmeyi kullan
+    return baseInterval;
   }
 
   public async syncLatestBlocks(): Promise<void> {
@@ -145,30 +169,59 @@ export class BlockSyncService {
   }
 
   private async syncBlockRange(startHeight: number, endHeight: number): Promise<void> {
-    const batchSize = this.currentBatchSize;
-    for (let currentHeight = startHeight; currentHeight <= endHeight; currentHeight += batchSize) {
-      const batchEndHeight = Math.min(currentHeight + batchSize - 1, endHeight);
-      await this.syncBlockRangeWithRetry(currentHeight, batchEndHeight);
-      this.processingQueue.push({ startHeight: currentHeight, endHeight: batchEndHeight });
-      await this.processQueue();
+    const limit = pLimit(this.MAX_CONCURRENT_BATCHES);
+    const tasks = [];
+
+    for (let height = startHeight; height <= endHeight; height += this.currentBatchSize) {
+      const batchEndHeight = Math.min(height + this.currentBatchSize - 1, endHeight);
+      tasks.push(limit(() => this.syncBlockRangeWithRetry(height, batchEndHeight)));
+    }
+
+    await Promise.all(tasks);
+    this.adjustBatchSize();
+  }
+
+  private async syncBlockRangeWithRetry(startHeight: number, endHeight: number, retries: number = 0): Promise<void> {
+    try {
+      await this.rateLimit();
+      const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
+      const processedData = await this.processBlocks(blocks);
+      await this.bulkInsertData(processedData);
+      logger.info(`${startHeight} ile ${endHeight} arasındaki bloklar senkronize edildi`);
+    } catch (error) {
+      if (retries < this.MAX_RETRIES) {
+        logger.warn(`Blok aralığı ${startHeight}-${endHeight} için yeniden deneme ${retries + 1}`);
+        await sleep(this.RETRY_DELAY);
+        await this.syncBlockRangeWithRetry(startHeight, endHeight, retries + 1);
+      } else {
+        logger.error(`Blok aralığı ${startHeight}-${endHeight} senkronizasyonu başarısız oldu:`, error);
+        throw error;
+      }
     }
   }
 
-  private async syncBlockRangeWithRetry(startHeight: number, endHeight: number, maxRetries = 3): Promise<void> {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
-        const processedData = await this.processBlocks(blocks);
-        await this.bulkInsertData(processedData);
-        logger.info(`${startHeight} ile ${endHeight} arasındaki bloklar senkronize edildi`);
-        return;
-      } catch (error) {
-        logger.warn(`Deneme ${attempt} başarısız oldu, blok aralığı ${startHeight}-${endHeight}: ${error}`);
-        if (attempt === maxRetries) {
-          throw error;
-        }
-        await sleep(5000 * attempt);
+  private async rateLimit(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastRequestTime < this.RATE_LIMIT_WINDOW) {
+      this.requestCount++;
+      if (this.requestCount > this.RATE_LIMIT) {
+        const delay = this.RATE_LIMIT_WINDOW - (now - this.lastRequestTime);
+        await sleep(delay);
+        this.requestCount = 1;
+        this.lastRequestTime = Date.now();
       }
+    } else {
+      this.requestCount = 1;
+      this.lastRequestTime = now;
+    }
+  }
+
+  private adjustBatchSize(): void {
+    // Basit bir adaptif batch boyutu ayarlama algoritması
+    if (this.isSyncing) {
+      this.currentBatchSize = Math.min(this.currentBatchSize * 1.2, this.MAX_BATCH_SIZE);
+    } else {
+      this.currentBatchSize = Math.max(this.currentBatchSize * 0.8, this.MIN_BATCH_SIZE);
     }
   }
 
