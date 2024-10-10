@@ -2,57 +2,79 @@
 
 This document provides an overview of the key services in the Aleo Network Monitor project.
 
-## AleoSDKService
+## Database Services
 
-Responsible for interacting with the Aleo blockchain network.
+### BaseDBService
+Base class for database operations.
 
-Key methods:
-- `getLatestBlock()`: Fetches the latest block from the network
-- `getBlockByHeight(height: number)`: Retrieves a specific block by its height
-- `getLatestCommittee()`: Fetches the current committee information
-- `getValidatorStake(address: string)`: Retrieves the stake for a specific validator
-
-## BlockSyncService
-
-Manages the synchronization of blocks from the Aleo network to the local database.
+### DatabaseInitializationService
+Handles database schema creation and updates.
 
 Key methods:
-- `syncLatestBlocks()`: Synchronizes the latest blocks from the network
-- `syncBlockRange(startHeight: number, endHeight: number)`: Syncs a specific range of blocks
+- `checkDatabaseStructure()`: Checks the database structure
+- `initializeDatabase()`: Initializes the database
+- `checkAndUpdateSchema()`: Checks and updates the schema if necessary
 
-## PerformanceMetricsService
+### BlockDBService
+Manages block data operations.
 
-Calculates and manages performance metrics for validators.
+### CommitteeDBService
+Handles committee-related data operations.
 
-Key methods:
-- `calculateValidatorUptime(address: string, timeFrame: number)`: Calculates the uptime for a validator
-- `getValidatorEfficiency(address: string, timeFrame: number)`: Calculates the efficiency of a validator
-- `updateUptimes()`: Updates uptime snapshots for all validators
+### BatchDBService
+Manages batch data operations.
 
-## AlertService
+### RewardsDBService
+Handles reward-related data operations.
 
-Monitors the network for anomalies and generates alerts.
+### UptimeDBService
+Manages uptime data operations.
 
-Key methods:
-- `checkMissedBlocks(validatorAddress: string, threshold: number)`: Checks if a validator has missed blocks
-- `checkLowUptime(validatorAddress: string, threshold: number)`: Checks if a validator's uptime is below a threshold
-- `getValidatorHealthStatus(validatorAddress: string)`: Retrieves the overall health status of a validator
+### MappingDBService
+Handles mapping data operations.
 
-## SnarkOSDBService
+## Core Services
 
-Manages database operations for the Aleo Network Monitor.
-
-Key methods:
-- `upsertBlocks(blocks: BlockAttributes[])`: Inserts or updates block data in the database
-- `getLatestBlockHeight()`: Retrieves the height of the latest block in the database
-- `getValidatorByAddress(address: string)`: Retrieves validator information from the database
-
-## RewardsService
-
-Manages the calculation and distribution of rewards.
+### SnarkOSDBService
+Coordinates all database services.
 
 Key methods:
-- `processBlockRewards(block: APIBlock)`: Processes and distributes rewards for a given block
-- `calculateValidatorReward(validatorAddress: string, blockReward: bigint, committee: LatestCommittee)`: Calculates the reward for a specific validator
+- `initializeDatabase()`: Initializes or updates the database schema
+
+### BlockSyncService
+Synchronizes block data from the Aleo network.
+
+Key methods:
+- `startSyncProcess()`: Starts the block synchronization process
+- `syncLatestBlocks()`: Synchronizes the latest blocks
+
+### ValidatorService
+Manages validator operations.
+
+Key methods:
+- `updateValidatorStatuses()`: Updates the status of all validators
+- `getValidator(address)`: Retrieves information for a specific validator
+
+### PerformanceMetricsService
+Calculates performance metrics for validators.
+
+Key method:
+- `updateUptimes()`: Updates uptime values for validators
+
+### AlertService
+Manages the alert system for validators.
+
+### RewardsService
+Handles reward calculations and distributions.
+
+### CacheService
+Manages caching operations.
+
+### AleoSDKService
+Interfaces with the Aleo network.
+
+## API and Web Interface
+- Express.js based API
+- React-based web interface (in a separate repository)
 
 For more detailed information on how these services interact, please refer to the [Architecture](architecture.md) document.

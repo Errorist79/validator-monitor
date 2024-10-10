@@ -10,18 +10,19 @@ import syncEvents from '../events/SyncEvents.js';
 import { initializeWasm, getAddressFromSignature } from 'aleo-address-derivation';
 import { CacheService } from './CacheService.js';
 import pLimit from 'p-limit';
+import { BaseDBService } from './database/BaseDBService';
 
 export class BlockSyncService {
   private readonly INITIAL_BATCH_SIZE = 30;
   private readonly MAX_BATCH_SIZE = 50;
   private readonly MIN_BATCH_SIZE = 10;
   private readonly MAX_RETRIES = 3;
-  private readonly RETRY_DELAY = 3000; // 3 saniye
+  private readonly RETRY_DELAY = 3000; // 3 seconds
   private readonly SYNC_START_BLOCK: number;
   private readonly SYNC_THRESHOLD = 10;
   private readonly MAX_CONCURRENT_BATCHES = 5;
-  private readonly RATE_LIMIT = 10; // Saniyede maksimum istek sayısı
-  private readonly RATE_LIMIT_WINDOW = 1000; // 1 saniye
+  private readonly RATE_LIMIT = 10; // Maximum requests per second
+  private readonly RATE_LIMIT_WINDOW = 1000; // 1 second
   private isSyncing: boolean = false;
   private isFullySynchronized: boolean = false;
   private lastSyncedBlockHeight: number = 0;
@@ -29,6 +30,8 @@ export class BlockSyncService {
   private currentBatchSize: number;
   private lastRequestTime: number = 0;
   private requestCount: number = 0;
+  private lastRegularSyncCompletedTime: number = 0;
+  private readonly REGULAR_SYNC_INTERVAL: number = 5 * 60 * 1000; // 5 dakika (milisaniye cinsinden)
 
   private processingQueue: Array<{ startHeight: number; endHeight: number }> = [];
   private isProcessing: boolean = false;
@@ -36,11 +39,12 @@ export class BlockSyncService {
   constructor(
     private aleoSDKService: AleoSDKService,
     private snarkOSDBService: SnarkOSDBService,
-    private cacheService: CacheService
+    private cacheService: CacheService,
+    private baseDBService: BaseDBService
   ) {
     this.SYNC_START_BLOCK = config.sync.startBlock;
     this.currentBatchSize = this.INITIAL_BATCH_SIZE;
-    initializeWasm(); // WASM başlatma
+    initializeWasm(); // Initialize WASM
     this.initializeLastSyncedBlockHeight();
   }
 
@@ -58,7 +62,7 @@ export class BlockSyncService {
     try {
       const latestNetworkBlock = await this.aleoSDKService.getLatestBlockHeight();
       if (latestNetworkBlock === null) {
-        throw new Error('En son ağ blok yüksekliği alınamadı');
+        throw new Error('Failed to get latest network block height');
       }
 
       const startHeight = Math.max(await this.getLatestSyncedBlockHeight(), this.SYNC_START_BLOCK);
@@ -91,7 +95,7 @@ export class BlockSyncService {
       try {
         const latestNetworkBlock = await this.aleoSDKService.getLatestBlockHeight();
         if (latestNetworkBlock === null) {
-          throw new Error('En son ağ blok yüksekliği alınamadı');
+          throw new Error('Failed to get latest network block height');
         }
 
         const latestSyncedBlock = await this.getLatestSyncedBlockHeight();
@@ -99,11 +103,18 @@ export class BlockSyncService {
           this.previousSyncedBlockHeight = this.lastSyncedBlockHeight;
           await this.syncBlockRange(latestSyncedBlock + 1, latestNetworkBlock);
           this.lastSyncedBlockHeight = latestNetworkBlock;
-          logger.info(`Bloklar ${latestNetworkBlock} yüksekliğine kadar senkronize edildi`);
+          logger.info(`Blocks synchronized up to height ${latestNetworkBlock}`);
         }
 
         if (this.isFullySynchronized) {
-          syncEvents.emit('regularSyncCompleted');
+          const currentTime = Date.now();
+          if (currentTime - this.lastRegularSyncCompletedTime >= this.REGULAR_SYNC_INTERVAL) {
+            syncEvents.emit('regularSyncCompleted');
+            this.lastRegularSyncCompletedTime = currentTime;
+            logger.info('Regular sync completed, event emitted');
+          } else {
+            logger.debug('Regular sync completed, but event not emitted due to time interval');
+          }
         }
       } catch (error) {
         logger.error('Regular synchronization failed:', error);
@@ -119,23 +130,23 @@ export class BlockSyncService {
   }
 
   private calculateNextSyncDelay(): number {
-    const baseInterval = 5000; // 5 saniye
-    const maxInterval = 60000; // 1 dakika
-    const minInterval = 1000; // 1 saniye
+    const baseInterval = 5000; // 5 seconds
+    const maxInterval = 60000; // 1 minute
+    const minInterval = 1000; // 1 second
 
-    // Son senkronizasyon sırasında işlenen blok sayısını al
+    // Get the number of blocks processed during the last synchronization
     const processedBlocks = this.lastSyncedBlockHeight - this.previousSyncedBlockHeight;
 
-    // Ağ yoğunluğuna göre gecikmeyi ayarla
+    // Adjust delay based on network congestion
     if (processedBlocks > 100) {
-      // Ağ çok yoğun, gecikmeyi azalt
+      // Network is very busy, reduce delay
       return Math.max(baseInterval / 2, minInterval);
     } else if (processedBlocks < 10) {
-      // Ağ yavaş, gecikmeyi artır
+      // Network is slow, increase delay
       return Math.min(baseInterval * 2, maxInterval);
     }
 
-    // Orta yoğunlukta, normal gecikmeyi kullan
+    // Medium congestion, use normal delay
     return baseInterval;
   }
 
@@ -143,7 +154,7 @@ export class BlockSyncService {
     try {
       const latestNetworkBlock = await this.aleoSDKService.getLatestBlockHeight();
       if (latestNetworkBlock === null) {
-        logger.warn('En son ağ blok yüksekliği alınamadı');
+        logger.warn('Failed to get latest network block height');
         return;
       }
 
@@ -151,9 +162,9 @@ export class BlockSyncService {
       
       if (latestNetworkBlock > startHeight) {
         await this.syncBlockRange(startHeight + 1, latestNetworkBlock);
-        logger.info(`Bloklar ${latestNetworkBlock} yüksekliğine kadar senkronize edildi`);
+        logger.info(`Blocks synchronized up to height ${latestNetworkBlock}`);
       } else {
-        logger.info('Bloklar zaten güncel');
+        logger.info('Blocks are already up to date');
       }
       
       const isSynchronized = await this.isDataSynchronized();
@@ -187,14 +198,14 @@ export class BlockSyncService {
       const blocks = await this.aleoSDKService.getBlockRange(startHeight, endHeight);
       const processedData = await this.processBlocks(blocks);
       await this.bulkInsertData(processedData);
-      logger.info(`${startHeight} ile ${endHeight} arasındaki bloklar senkronize edildi`);
+      logger.info(`Blocks synchronized between ${startHeight} and ${endHeight}`);
     } catch (error) {
       if (retries < this.MAX_RETRIES) {
-        logger.warn(`Blok aralığı ${startHeight}-${endHeight} için yeniden deneme ${retries + 1}`);
+        logger.warn(`Retrying block range ${startHeight}-${endHeight}, attempt ${retries + 1}`);
         await sleep(this.RETRY_DELAY);
         await this.syncBlockRangeWithRetry(startHeight, endHeight, retries + 1);
       } else {
-        logger.error(`Blok aralığı ${startHeight}-${endHeight} senkronizasyonu başarısız oldu:`, error);
+        logger.error(`Failed to synchronize block range ${startHeight}-${endHeight}:`, error);
         throw error;
       }
     }
@@ -217,7 +228,7 @@ export class BlockSyncService {
   }
 
   private adjustBatchSize(): void {
-    // Basit bir adaptif batch boyutu ayarlama algoritması
+    // Simple adaptive batch size adjustment algorithm
     if (this.isSyncing) {
       this.currentBatchSize = Math.min(this.currentBatchSize * 1.2, this.MAX_BATCH_SIZE);
     } else {
@@ -247,9 +258,9 @@ export class BlockSyncService {
     const processedData = await this.processBlocks(blocks);
     await this.bulkInsertData(processedData);
     
-    logger.info(`${startHeight} ile ${endHeight} arasındaki bloklar işlendi`);
+    logger.info(`Blocks processed between ${startHeight} and ${endHeight}`);
     
-    // Blok aralığı işlendiğinde bir olay yayınla
+    // Emit an event when a block range is processed
     syncEvents.emit('batchAndParticipationProcessed', { startHeight, endHeight });
   }
 
@@ -290,34 +301,34 @@ export class BlockSyncService {
     committeeParticipations: any[];
     signatureParticipations: any[];
   }): Promise<void> {
-    const client = await this.snarkOSDBService.getClient();
+    const client = await this.baseDBService.getClient();
     try {
       await client.query('BEGIN');
-
+  
       if (processedData.blockAttributesList.length > 0) {
         await this.snarkOSDBService.upsertBlocks(processedData.blockAttributesList, client);
       }
-
+  
       if (processedData.batchInfos.length > 0) {
         await this.snarkOSDBService.bulkInsertBatchInfos(processedData.batchInfos, client);
       }
-
+  
       if (processedData.committeeMembers.length > 0) {
         await this.snarkOSDBService.bulkInsertCommitteeMembers(processedData.committeeMembers, client);
       }
-
+  
       if (processedData.committeeParticipations.length > 0) {
         await this.snarkOSDBService.bulkInsertCommitteeParticipations(processedData.committeeParticipations, client);
       }
-
+  
       if (processedData.signatureParticipations.length > 0) {
         await this.snarkOSDBService.bulkInsertSignatureParticipations(processedData.signatureParticipations, client);
       }
-
+  
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
-      logger.error('bulkInsertData işleminde hata:', error);
+      logger.error('Error in bulkInsertData operation:', error);
       throw error;
     } finally {
       client.release();
@@ -360,7 +371,7 @@ export class BlockSyncService {
     const latestNetworkBlock = await this.aleoSDKService.getLatestBlockHeight();
 
     if (latestNetworkBlock === null) {
-      logger.warn('En son ağ blok yüksekliği alınamadı');
+      logger.warn('Failed to get latest network block height');
       return false;
     }
 
@@ -442,7 +453,7 @@ export class BlockSyncService {
           }
         }
 
-        // Batch'in kendi imzası
+        // Batch's own signature
         if (batch.batch_header.signature) {
           const validatorAddress = getAddressFromSignature(batch.batch_header.signature);
           signatureParticipations.push({

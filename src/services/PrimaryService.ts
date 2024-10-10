@@ -1,5 +1,3 @@
-import { AleoNetworkClient } from '@aleohq/sdk';
-import crypto from 'crypto';
 import { AleoSDKService } from './AleoSDKService';
 
 interface Transmission {

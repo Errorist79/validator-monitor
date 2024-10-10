@@ -1,10 +1,10 @@
 import { CacheService } from './CacheService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
 import { AleoSDKService } from './AleoSDKService.js';
+import { BlockSyncService } from './BlockSyncService.js';
 import logger from '../utils/logger.js';
 import { config } from '../config/index.js';
 import syncEvents from '../events/SyncEvents.js';
-import { BlockSyncService } from './BlockSyncService.js';
 import { UptimeSnapshotAttributes } from '../database/models/UptimeSnapshot.js';
 import pLimit from 'p-limit';
 import { CommitteeData } from '../database/models/CommitteeParticipation.js';
@@ -68,14 +68,14 @@ export class PerformanceMetricsService {
     const latestBlockHeight = await this.aleoSDKService.getLatestBlockHeight();
     logger.info(`Performing full uptime calculation up to block height ${latestBlockHeight}`);
 
-    // Veritabanındaki son bloğu kontrol et
+    // Check the last block in the database
     const lastSyncedHeight = await this.snarkOSDBService.getLatestBlockHeight();
     if (lastSyncedHeight < latestBlockHeight) {
       logger.warn(`Database is not fully synced. Expected: ${latestBlockHeight}, Actual: ${lastSyncedHeight}`);
       return;
     }
 
-    // Uptime hesaplaması için gerekli verilerin varlığını kontrol et
+    // Check the availability of data required for uptime calculation
     const dataAvailable = await this.checkRequiredDataAvailability(this.SYNC_START_BLOCK, latestBlockHeight);
     if (!dataAvailable) {
       logger.warn('Required data for uptime calculation is not available');
@@ -86,7 +86,7 @@ export class PerformanceMetricsService {
   }
 
   private async checkRequiredDataAvailability(startHeight: number, endHeight: number): Promise<boolean> {
-    // Gerekli verilerin varlığını kontrol et (örneğin, komiteler, imzalar, batch'ler)
+    // Check the availability of required data (e.g., committees, signatures, batches)
     const committeesAvailable = await this.snarkOSDBService.checkCommitteesAvailability(startHeight, endHeight);
     const signaturesAvailable = await this.snarkOSDBService.checkSignaturesAvailability(startHeight, endHeight);
     const batchesAvailable = await this.snarkOSDBService.checkBatchesAvailability(startHeight, endHeight);

@@ -22,7 +22,7 @@ export class AlertService {
       if (error instanceof Error) {
         logger.error(`Error checking missed blocks for validator ${validatorAddress}: ${error.message}`);
       } else {
-        logger.error(`Error checking missed blocks for validator ${validatorAddress}: Bilinmeyen hata`);
+        logger.error(`Error checking missed blocks for validator ${validatorAddress}: Unknown error`);
       }
       throw error;
     }
@@ -42,7 +42,7 @@ export class AlertService {
       const uptime = await this.performanceMetricsService.calculateUptime(validatorAddress);
       if (uptime === null) {
         logger.warn(`Unable to calculate uptime for validator ${validatorAddress}`);
-        return false;  // veya başka bir uygun değer
+        return false;  // or another appropriate value
       }
       if (uptime < threshold) {
         logger.warn(`Validator ${validatorAddress} has low uptime: ${uptime}%, below threshold of ${threshold}%`);
@@ -68,7 +68,7 @@ export class AlertService {
       if (error instanceof Error) {
         logger.error(`Error checking rewards for validator ${validatorAddress}: ${error.message}`);
       } else {
-        logger.error(`Error checking rewards for validator ${validatorAddress}: Bilinmeyen hata`);
+        logger.error(`Error checking rewards for validator ${validatorAddress}: Unknown error`);
       }
       throw error;
     }
@@ -86,7 +86,7 @@ export class AlertService {
       if (error instanceof Error) {
         logger.error(`Error checking efficiency for validator ${validatorAddress}: ${error.message}`);
       } else {
-        logger.error(`Error checking efficiency for validator ${validatorAddress}: Bilinmeyen hata`);
+        logger.error(`Error checking efficiency for validator ${validatorAddress}: Unknown error`);
       }
       throw error;
     }

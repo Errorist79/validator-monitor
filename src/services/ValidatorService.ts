@@ -35,13 +35,14 @@ export class ValidatorService {
   }
 
   private async checkValidatorActivity(validatorAddress: string): Promise<boolean> {
-    const startTime = Math.floor(Date.now() / 1000) - 1 * 60 * 60; // Son 1 saat (saniye cinsinden)
-    const endTime = Math.floor(Date.now() / 1000); // Şu an (saniye cinsinden)
+    const startTime = Math.floor(Date.now() / 1000) - 1 * 60 * 60; // Last 1 hour (in seconds)
+    const endTime = Math.floor(Date.now() / 1000); // Current time (in seconds)
 
+    // Check if validator has produced any batches or signatures in the last hour
     const recentBatches = await this.snarkOSDBService.getValidatorBatches(validatorAddress, startTime, endTime);
     const recentSignatures = await this.snarkOSDBService.getValidatorSignatures(validatorAddress, startTime, endTime);
 
-    logger.debug(`Validator ${validatorAddress} son ${startTime} ile ${endTime} arasında ${recentBatches.length} batch işlemine ve ${recentSignatures.length} imzaya sahip`);
+    logger.debug(`Validator ${validatorAddress} has ${recentBatches.length} batch operations and ${recentSignatures.length} signatures between ${startTime} and ${endTime}`);
 
     return recentBatches.length > 0 || recentSignatures.length > 0;
   }
@@ -61,7 +62,7 @@ export class ValidatorService {
 
   /* async getValidatorPerformance(address: string): Promise<any> {
     try {
-      const validator = await this.snarkOSDBService.executeQuery(
+      const validator = await this.baseDBService.executeQuery(
         'SELECT * FROM validators WHERE address = $1',
         [address]
       );
@@ -81,8 +82,8 @@ export class ValidatorService {
       return {
         validator: {
           ...validator.rows[0],
-          stake: validator.rows[0].stake.toString(), // BigInt'i string'e çevir
-          bonded: validator.rows[0].bonded.toString() // BigInt'i string'e çevir
+          stake: validator.rows[0].stake.toString(), // Convert BigInt to string
+          bonded: validator.rows[0].bonded.toString() // Convert BigInt to string
         },
         performance
       };

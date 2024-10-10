@@ -1,6 +1,5 @@
 import express from 'express';
 import ValidatorService from './services/ValidatorService.js';
-import BlockService from './services/BlockService.js';
 import ConsensusService from './services/ConsensusService.js';
 import PrimaryService from './services/PrimaryService.js';
 import api from './api/index.js';
@@ -15,8 +14,8 @@ import AleoSDKService from './services/AleoSDKService.js';
 import { NotFoundError, ValidationError } from './utils/errors.js';
 import BlockSyncService from './services/BlockSyncService.js';
 import RewardsService from './services/RewardsService.js';
-import syncEvents from './events/SyncEvents.js';
 import { CacheService } from './services/CacheService.js';
+import { BaseDBService } from './services/database/BaseDBService.js';
 
 const app = express();
 let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
@@ -27,15 +26,17 @@ logger.level = 'debug';
 logger.info(`Initializing AleoSDKService with URL: ${config.aleo.sdkUrl} and network type: ${config.aleo.networkType}`);
 const cacheService = new CacheService(config.redis.url);
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
-const snarkOSDBService = new SnarkOSDBService(aleoSDKService);
-const blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService, cacheService);
-const performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService, cacheService);
-const validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, performanceMetricsService);
-const blockService = new BlockService(aleoSDKService, snarkOSDBService);
+const snarkOSDBService = new SnarkOSDBService();
+const baseDBService = new BaseDBService();
+
+let blockSyncService: BlockSyncService;
+let performanceMetricsService: PerformanceMetricsService;
+let validatorService: ValidatorService;
+let alertService: AlertService;
+let rewardsService: RewardsService;
+
 const consensusService = new ConsensusService(aleoSDKService);
 const primaryService = new PrimaryService(aleoSDKService);
-const alertService = new AlertService(snarkOSDBService, performanceMetricsService);
-const rewardsService = new RewardsService(aleoSDKService, snarkOSDBService);
 
 logger.info(`ConsensusService initialized with URL: ${config.aleo.sdkUrl}`);
 
@@ -81,27 +82,22 @@ function startServer() {
 
 async function initialize() {
   try {
-    logger.info('Initializing database...');
+    logger.info('Initializing and checking database...');
     await snarkOSDBService.initializeDatabase();
-    logger.info('Database initialized successfully');
+    logger.info('Database initialized and checked successfully');
 
-    logger.info('Checking and updating database schema...');
-    await snarkOSDBService.checkAndUpdateSchema();
-    logger.info('Database schema check and update completed');
+    blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService, cacheService, baseDBService);
+    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService, cacheService);
+    validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, performanceMetricsService);
+    alertService = new AlertService(snarkOSDBService, performanceMetricsService);
+    rewardsService = new RewardsService(aleoSDKService, snarkOSDBService);
 
     await tryConnect();
-    await blockSyncService.startSyncProcess(); // İlk senkronizasyonu başlat
+    await blockSyncService.startSyncProcess();
     startServer();
 
-    // API rotalarını ekliyoruz
     app.use(express.json());
     app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService));
-
-    // BlockSyncService'i düzenli olarak çalıştırıyoruz
-
-    // Her 10 saniyede bir blokları senkronize ediyoruz
-
-    // Eski uptime hesaplama cron job'ını ve manuel endpoint'i kaldırıyoruz
 
   } catch (error) {
     logger.error('Initialization error:', error);
@@ -110,8 +106,6 @@ async function initialize() {
 }
 
 initialize();
-
-app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService));
 
 app.get('/api/validators', async (req, res) => {
   try {

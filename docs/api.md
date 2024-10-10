@@ -1,39 +1,48 @@
 # API Documentation
 
+This document provides an overview of the main API endpoints in the Aleo Validator Monitoring System.
+
+## Base URL
+
+All API requests should be sent to: `http://your-api-base-url/api`
+
 ## Endpoints
 
 ### Validators
 
-- `GET /api/validators`: Retrieve all validators.
-- `GET /api/validators/:address`: Retrieve a specific validator by address.
-- `GET /api/validators/:address/performance`: Get performance metrics for a specific validator.
-- `GET /api/validators/:address/efficiency`: Get efficiency metrics for a specific validator.
-- `GET /api/validators/:address/rewards`: Get rewards information for a specific validator.
-- `GET /api/validators/:address/health`: Get health status of a specific validator.
-- `GET /api/validators/:address/uptime`: Get uptime percentage of a specific validator.
+- `GET /validators`: Retrieve a list of all validators
+- `GET /validators/:address`: Get details for a specific validator
 
 ### Blocks
 
-- `GET /api/blocks/latest`: Retrieve the latest block.
-- `GET /api/blocks/:height`: Retrieve a block by its height.
+- `GET /blocks/latest`: Get the latest block information
+- `GET /blocks/:height`: Get block information for a specific height
 
 ### Consensus
-
 - `GET /api/consensus/round`: Get the current consensus round.
 - `GET /api/consensus/committee`: Get the current committee information.
 
-### Primary
+### Performance Metrics
 
-- `GET /api/primary/transmissions`: Collect primary transmissions.
+- `GET /metrics/:address`: Get performance metrics for a specific validator
 
-### Test Endpoints
+### Alerts
 
-- `GET /api/test/latest-block`: Fetch the latest block (testing purposes).
-- `GET /api/test/latest-committee`: Fetch the latest committee (testing purposes).
-- `GET /api/test/block/:height`: Fetch a block by height (testing purposes).
-- `GET /api/test/transaction/:id`: Fetch a transaction by ID (testing purposes).
-- `GET /api/test/transactions/:height`: Fetch transactions for a specific block height (testing purposes).
-- `GET /api/test/raw-latest-block`: Fetch the raw latest block data (testing purposes).
+- `GET /alerts/:address`: Get alerts for a specific validator
+
+### Rewards
+
+- `GET /rewards/:address`: Get reward information for a specific validator or delegator
+
+## Error Handling
+
+The API uses standard HTTP response codes to indicate the success or failure of requests. In case of an error, the response will include a JSON object with an `error` field providing more details about the error.
+
+## Rate Limiting
+
+API requests are subject to rate limiting to ensure fair usage. Please refer to the `apiLimiter` middleware for specific limits.
+
+For more detailed information about the API implementation, please refer to the `src/api/index.ts` file in the source code.
 
 ## Authentication
 

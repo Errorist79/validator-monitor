@@ -1,5 +1,4 @@
 import express from 'express';
-import { BlockService } from '../../services/BlockService.js';
 import { BlockSyncService } from '../../services/BlockSyncService.js';
 import logger from '../../utils/logger.js';
 import { NotFoundError, ValidationError } from '../../utils/errors.js';

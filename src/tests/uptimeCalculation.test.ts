@@ -5,6 +5,7 @@ import { config } from '../config/index.js';
 import { Block, BlockAttributes } from '../database/models/Block.js';
 import { BlockSyncService } from '../services/BlockSyncService.js';
 import { CacheService } from '../services/CacheService.js';
+import { BaseDBService } from '../services/database/BaseDBService.js'; // Added import for BaseDBService
 // Jest'in global fonksiyonlarını tanımlayalım
 declare const describe: jest.Describe;
 declare const beforeAll: jest.Lifecycle;
@@ -23,10 +24,11 @@ describe('Uptime Calculation', () => {
   beforeAll(async () => {
     // Test veritabanı bağlantısını kur
     process.env.TEST_DATABASE_URL = 'postgres://postgres:admin@localhost:5432/testdb';
-    snarkOSDBService = new SnarkOSDBService(aleoSDKService);
+    snarkOSDBService = new SnarkOSDBService();
     aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet'); // AleoSDKService örneği oluştur
     cacheService = new CacheService(config.redis.url);
-    mockBlockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService, cacheService) as jest.Mocked<BlockSyncService>;
+    const baseDBService = new BaseDBService(); // Gerçek bir BaseDBService oluşturun
+    mockBlockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService, cacheService, baseDBService) as jest.Mocked<BlockSyncService>;
     performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, mockBlockSyncService, cacheService);
 
     // Test veritabanını hazırla

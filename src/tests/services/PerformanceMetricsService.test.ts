@@ -6,6 +6,7 @@ import { Batch } from '../../database/models/Batch.js';
 import { BlockSyncService } from '../../services/BlockSyncService.js';
 import { CacheService } from '../../services/CacheService.js';
 import { config } from '../../config/index.js';
+import { BaseDBService } from '../../services/database/BaseDBService.js';
 jest.mock('../../services/SnarkOSDBService');
 jest.mock('../../services/AleoSDKService');
 jest.mock('../../services/CacheService');
@@ -17,9 +18,10 @@ describe('PerformanceMetricsService', () => {
   let mockCacheService: jest.Mocked<CacheService>;
   beforeEach(() => {
     mockAleoSDKService = new AleoSDKService('https://api.explorer.provable.com/v1', 'testnet') as jest.Mocked<AleoSDKService>;
-    mockSnarkOSDBService = new SnarkOSDBService(mockAleoSDKService) as jest.Mocked<SnarkOSDBService>;
+    mockSnarkOSDBService = new SnarkOSDBService() as jest.Mocked<SnarkOSDBService>;
     mockCacheService = new CacheService(config.redis.url) as jest.Mocked<CacheService>;
-    mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService, mockCacheService) as jest.Mocked<BlockSyncService>;
+    const mockBaseDBService = {} as BaseDBService; // Mock bir BaseDBService oluşturun
+    mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService, mockCacheService, mockBaseDBService) as jest.Mocked<BlockSyncService>;
     performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService, mockBlockSyncService, mockCacheService);
   });
 

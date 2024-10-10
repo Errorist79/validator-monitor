@@ -9,7 +9,7 @@ import { getBigIntFromString } from '../utils/helpers.js';
 import { BondedMapping, CommitteeMapping, LatestCommittee, DelegatedMapping } from '../database/models/Mapping.js';
 import logger from '../utils/logger.js';
 
-// Özel tip tanımlamaları
+// Custom type definitions
 type CommitteeResult = {
   is_open: boolean;
   commission: string | number;
@@ -136,7 +136,7 @@ export class AleoSDKService {
       logger.debug(`Raw committee mapping result for (${address}):`, JSON.stringify(result, null, 2));
 
       if (result === null || result === undefined) {
-        logger.warn(`${address} için komite eşlemesi bulunamadı`);
+        logger.warn(`Committee mapping not found for ${address}`);
         return null;
       }
 
@@ -147,10 +147,10 @@ export class AleoSDKService {
         return { is_open: isOpen, commission };
       }
 
-      logger.warn(`${address} için beklenmeyen komite eşleme formatı:`, JSON.stringify(result, null, 2));
+      logger.warn(`Unexpected committee mapping format for ${address}:`, JSON.stringify(result, null, 2));
       return null;
     } catch (error) {
-      logger.error(`${address} için komite eşlemesi alınırken hata oluştu:`, error);
+      logger.error(`Error getting committee mapping for ${address}:`, error);
       return null;
     }
   }
@@ -159,11 +159,11 @@ export class AleoSDKService {
     try {
       const rawResult = await this.network.getProgramMappingValue("credits.aleo", "bonded", address);
       const result = this.parseRawResult(rawResult);
-      logger.debug(`Ham bağlı eşleme sonucu (${address}):`, JSON.stringify(result, null, 2));
+      logger.debug(`Raw bonded mapping result for (${address}):`, JSON.stringify(result, null, 2));
 
       if (result === null || result === undefined) {
-        logger.warn(`${address} için bağlı eşleme bulunamadı`);
-        throw new Error(`${address} için bağlı eşleme bulunamadı`);
+        logger.warn(`Bonded mapping not found for ${address}`);
+        throw new Error(`Bonded mapping not found for ${address}`);
       }
 
       if (typeof result === 'object' && result !== null) {
@@ -172,14 +172,14 @@ export class AleoSDKService {
 
         return {
           ...result,
-          microcredits: microcredits.toString(), // BigInt'i string'e dönüştür
+          microcredits: microcredits.toString(), // Convert BigInt to string
         };
       }
 
-      logger.warn(`${address} için beklenmeyen bağlı eşleme formatı:`, JSON.stringify(result, null, 2));
-      throw new Error(`${address} için beklenmeyen bağlı eşleme formatı`);
+      logger.warn(`Unexpected bonded mapping format for ${address}:`, JSON.stringify(result, null, 2));
+      throw new Error(`Unexpected bonded mapping format for ${address}`);
     } catch (error) {
-      logger.error(`${address} için bağlı eşleme alınırken hata oluştu:`, error);
+      logger.error(`Error getting bonded mapping for ${address}:`, error);
       throw error;
     }
   }
@@ -212,20 +212,20 @@ export class AleoSDKService {
     let cleanedResult = rawResult;
   
     try {
-      // Anahtar isimlerini çift tırnak içine al
+      // Wrap key names in double quotes
       cleanedResult = cleanedResult.replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":');
   
-      // Dize değerlerini çift tırnak içine al
+      // Wrap string values in double quotes
       cleanedResult = cleanedResult.replace(/:\s*([a-zA-Z0-9_]+)([,}])/g, ': "$1"$2');
   
-      // Sayısal değerlerdeki tip eklerini kaldır
+      // Remove type suffixes from numeric values
       cleanedResult = cleanedResult.replace(/(\d+)u(8|16|32|64|128)/g, '$1');
   
       return JSON.parse(cleanedResult);
     } catch (error) {
       logger.error('Error parsing raw result:', error);
       logger.error('Cleaned result:', cleanedResult);
-      return null; // Ayrıştırma başarısız olursa null döndür
+      return null; // Return null if parsing fails
     }
   }
 
@@ -435,7 +435,7 @@ export class AleoSDKService {
       return { committeeMapping, bondedMapping, delegatedMapping };
     } catch (error) {
       logger.error(`Error fetching mappings for author ${author}:`, error);
-      // Hata durumunda da bir nesne döndürüyoruz
+      // Return an object even in case of error
       return {
         committeeMapping: null,
         bondedMapping: null,

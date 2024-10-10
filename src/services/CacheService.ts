@@ -43,7 +43,7 @@ export class CacheService {
     this.strategy = new RedisCacheStrategy(redisUrl);
   }
 
-  // Özel replacer fonksiyonu
+  // Custom replacer function
   private replacer(key: string, value: any): any {
     if (typeof value === 'bigint') {
       return value.toString() + 'n';
@@ -51,7 +51,7 @@ export class CacheService {
     return value;
   }
 
-  // Özel reviver fonksiyonu
+  // Custom reviver function
   private reviver(key: string, value: any): any {
     if (typeof value === 'string' && /^\d+n$/.test(value)) {
       return BigInt(value.slice(0, -1));
@@ -89,9 +89,10 @@ export class CacheService {
     await this.strategy.flush();
   }
 
+
   async cacheCommittee(committee: any): Promise<void> {
     try {
-      await this.set('latest_committee', committee, 60 * 60); // 1 saat TTL
+      await this.set('latest_committee', committee, 60 * 60); // 1 hour TTL
     } catch (error) {
       logger.error('Error caching committee:', error);
     }
