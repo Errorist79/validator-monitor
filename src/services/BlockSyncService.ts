@@ -36,6 +36,11 @@ export class BlockSyncService {
   private processingQueue: Array<{ startHeight: number; endHeight: number }> = [];
   private isProcessing: boolean = false;
 
+  private readonly BASE_SYNC_INTERVAL = 30000; // 30 saniye
+  private readonly MAX_SYNC_INTERVAL = 300000; // 5 dakika
+  private readonly MIN_SYNC_INTERVAL = 10000; // 10 saniye
+  private lastSyncTime: number = 0;
+
   constructor(
     private aleoSDKService: AleoSDKService,
     private snarkOSDBService: SnarkOSDBService,
@@ -90,6 +95,17 @@ export class BlockSyncService {
 
   private startRegularSync(): void {
     const adaptiveSync = async () => {
+      const now = Date.now();
+      const timeSinceLastSync = now - this.lastSyncTime;
+      const nextSyncDelay = this.calculateNextSyncDelay();
+
+      if (timeSinceLastSync < nextSyncDelay) {
+        setTimeout(adaptiveSync, nextSyncDelay - timeSinceLastSync);
+        return;
+      }
+
+      this.lastSyncTime = now;
+
       if (this.isSyncing) return;
       this.isSyncing = true;
       try {
@@ -122,32 +138,26 @@ export class BlockSyncService {
         this.isSyncing = false;
       }
 
-      const nextSyncDelay = this.calculateNextSyncDelay();
-      setTimeout(adaptiveSync, nextSyncDelay);
+      setTimeout(adaptiveSync, this.calculateNextSyncDelay());
     };
 
     adaptiveSync();
   }
 
   private calculateNextSyncDelay(): number {
-    const baseInterval = 5000; // 5 seconds
-    const maxInterval = 60000; // 1 minute
-    const minInterval = 1000; // 1 second
-
-    // Get the number of blocks processed during the last synchronization
     const processedBlocks = this.lastSyncedBlockHeight - this.previousSyncedBlockHeight;
 
-    // Adjust delay based on network congestion
+    let interval = this.BASE_SYNC_INTERVAL;
+
     if (processedBlocks > 100) {
-      // Network is very busy, reduce delay
-      return Math.max(baseInterval / 2, minInterval);
+      // Ağ çok yoğun, aralığı azalt
+      interval = Math.max(interval / 2, this.MIN_SYNC_INTERVAL);
     } else if (processedBlocks < 10) {
-      // Network is slow, increase delay
-      return Math.min(baseInterval * 2, maxInterval);
+      // Ağ yavaş, aralığı artır
+      interval = Math.min(interval * 2, this.MAX_SYNC_INTERVAL);
     }
 
-    // Medium congestion, use normal delay
-    return baseInterval;
+    return interval;
   }
 
   public async syncLatestBlocks(): Promise<void> {
