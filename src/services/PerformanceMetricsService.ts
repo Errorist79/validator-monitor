@@ -8,6 +8,7 @@ import syncEvents from '../events/SyncEvents.js';
 import { UptimeSnapshotAttributes } from '../database/models/UptimeSnapshot.js';
 import pLimit from 'p-limit';
 import { CommitteeData } from '../database/models/CommitteeParticipation.js';
+import { ValidatorDBService } from './database/ValidatorDBService.js';
 
 
 
@@ -23,7 +24,8 @@ export class PerformanceMetricsService {
     private snarkOSDBService: SnarkOSDBService,
     private aleoSDKService: AleoSDKService,
     private blockSyncService: BlockSyncService,
-    private cacheService: CacheService
+    private cacheService: CacheService,
+    private validatorDBService: ValidatorDBService
   ) {
     this.SYNC_START_BLOCK = config.sync.startBlock;
     this.CALCULATION_INTERVAL = config.uptime.calculationInterval;
@@ -118,6 +120,33 @@ export class PerformanceMetricsService {
     } catch (error) {
       logger.error('Error during uptime update:', error);
       throw error;
+    }
+  }
+  async getValidatorUptime(validatorAddress: string): Promise<number | null> {
+    try {
+      logger.debug(`Fetching uptime for validator ${validatorAddress}`);
+      
+      const latestUptimeSnapshot = await this.snarkOSDBService.getLatestUptimeSnapshot(validatorAddress);
+      
+      if (!latestUptimeSnapshot) {
+        logger.warn(`No uptime snapshot found for validator ${validatorAddress}`);
+        return null;
+      }
+      
+      const currentTime = new Date();
+      const snapshotAge = (currentTime.getTime() - latestUptimeSnapshot.calculated_at.getTime()) / (1000 * 60 * 60); // Age in hours
+      
+      if (snapshotAge > 24) { // If snapshot is older than 24 hours
+        logger.info(`Uptime snapshot for ${validatorAddress} is outdated. Triggering a new calculation.`);
+        await this.calculateAndUpdateUptime(validatorAddress, BigInt(await this.aleoSDKService.getCurrentRound()));
+        return this.getValidatorUptime(validatorAddress); // Recursive call to get the fresh uptime
+      }
+      
+      logger.info(`Uptime for validator ${validatorAddress}: ${latestUptimeSnapshot.uptime_percentage.toFixed(2)}%`);
+      return latestUptimeSnapshot.uptime_percentage;
+    } catch (error) {
+      logger.error(`Error fetching uptime for validator ${validatorAddress}:`, error);
+      throw new Error(`Validatör uptime değeri alınırken bir hata oluştu: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
     }
   }
 
@@ -273,6 +302,34 @@ export class PerformanceMetricsService {
     const count = await this.snarkOSDBService.getTotalValidatorsCount();
     await this.cacheService.set(cacheKey, count);
     return count;
+  }
+  async getValidatorPerformance(validatorAddress: string, timeFrame: number = 24 * 60 * 60): Promise<any> {
+    try {
+      const cacheKey = `validator_performance_${validatorAddress}_${timeFrame}`;
+      const cachedData = await this.cacheService.get(cacheKey);
+      if (cachedData !== null && typeof cachedData === 'string') {
+        return JSON.parse(cachedData);
+      }
+
+      const performance = await this.validatorDBService.monitorValidatorPerformance(validatorAddress, timeFrame);
+      const uptime = await this.getValidatorUptime(validatorAddress);
+
+      const result = {
+        ...performance,
+        uptimePercentage: uptime
+      };
+
+      await this.cacheService.set(cacheKey, JSON.stringify(result), 5 * 60); // Cache for 5 minutes
+
+      return result;
+    } catch (error: unknown) {
+      logger.error(`Error getting performance for validator ${validatorAddress}:`, error);
+      if (error instanceof Error) {
+        throw new Error(`Validatör performansı alınırken bir hata oluştu: ${error.message}`);
+      } else {
+        throw new Error(`Validatör performansı alınırken bilinmeyen bir hata oluştu.`);
+      }
+    }
   }
 
   // TODO: Implement getValidatorPerformanceSummary method

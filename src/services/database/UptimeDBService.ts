@@ -31,6 +31,35 @@ export class UptimeDBService extends BaseDBService {
       throw error;
     }
   }
+  async getLatestUptimeSnapshot(validatorAddress: string): Promise<UptimeSnapshotAttributes | null> {
+    const query = `
+      SELECT *
+      FROM uptime_snapshots
+      WHERE validator_address = $1
+      ORDER BY calculated_at DESC
+      LIMIT 1
+    `;
+    try {
+      const result = await this.query(query, [validatorAddress]);
+      if (result.rows.length === 0) {
+        return null;
+      }
+      const snapshot = result.rows[0];
+      return {
+        id: snapshot.id,
+        validator_address: snapshot.validator_address,
+        start_round: BigInt(snapshot.start_round),
+        end_round: BigInt(snapshot.end_round),
+        total_rounds: Number(snapshot.total_rounds),
+        participated_rounds: Number(snapshot.participated_rounds),
+        uptime_percentage: snapshot.uptime_percentage,
+        calculated_at: snapshot.calculated_at
+      };
+    } catch (error) {
+      logger.error(`En son uptime snapshot alınırken hata oluştu (validator: ${validatorAddress}):`, error);
+      throw error;
+    }
+  }
 
   async getLastUptimeSnapshot(address: string): Promise<any | null> {
     const query = `

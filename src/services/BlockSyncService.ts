@@ -36,10 +36,15 @@ export class BlockSyncService {
   private processingQueue: Array<{ startHeight: number; endHeight: number }> = [];
   private isProcessing: boolean = false;
 
-  private readonly BASE_SYNC_INTERVAL = 30000; // 30 saniye
+  private readonly BASE_SYNC_INTERVAL = 50000; // 50 saniye
   private readonly MAX_SYNC_INTERVAL = 300000; // 5 dakika
-  private readonly MIN_SYNC_INTERVAL = 10000; // 10 saniye
+  private readonly MIN_SYNC_INTERVAL = 30000; // 30 saniye
   private lastSyncTime: number = 0;
+
+  private tokenBucket = {
+    tokens: this.RATE_LIMIT,
+    lastRefill: Date.now()
+  };
 
   constructor(
     private aleoSDKService: AleoSDKService,
@@ -190,11 +195,12 @@ export class BlockSyncService {
   }
 
   private async syncBlockRange(startHeight: number, endHeight: number): Promise<void> {
+    const maxBlocksPerRequest = 50; // API'nin izin verdiği maksimum blok sayısı
     const limit = pLimit(this.MAX_CONCURRENT_BATCHES);
     const tasks = [];
 
-    for (let height = startHeight; height <= endHeight; height += this.currentBatchSize) {
-      const batchEndHeight = Math.min(height + this.currentBatchSize - 1, endHeight);
+    for (let height = startHeight; height <= endHeight; height += maxBlocksPerRequest) {
+      const batchEndHeight = Math.min(height + maxBlocksPerRequest - 1, endHeight);
       tasks.push(limit(() => this.syncBlockRangeWithRetry(height, batchEndHeight)));
     }
 
@@ -211,11 +217,12 @@ export class BlockSyncService {
       logger.info(`Blocks synchronized between ${startHeight} and ${endHeight}`);
     } catch (error) {
       if (retries < this.MAX_RETRIES) {
-        logger.warn(`Retrying block range ${startHeight}-${endHeight}, attempt ${retries + 1}`);
-        await sleep(this.RETRY_DELAY);
+        const delay = Math.pow(2, retries) * this.RETRY_DELAY;
+        logger.warn(`Retrying block range ${startHeight}-${endHeight}, attempt ${retries + 1}. Waiting for ${delay}ms`);
+        await sleep(delay);
         await this.syncBlockRangeWithRetry(startHeight, endHeight, retries + 1);
       } else {
-        logger.error(`Failed to synchronize block range ${startHeight}-${endHeight}:`, error);
+        logger.error(`Failed to synchronize block range ${startHeight}-${endHeight} after ${this.MAX_RETRIES} attempts:`, error);
         throw error;
       }
     }
@@ -223,18 +230,18 @@ export class BlockSyncService {
 
   private async rateLimit(): Promise<void> {
     const now = Date.now();
-    if (now - this.lastRequestTime < this.RATE_LIMIT_WINDOW) {
-      this.requestCount++;
-      if (this.requestCount > this.RATE_LIMIT) {
-        const delay = this.RATE_LIMIT_WINDOW - (now - this.lastRequestTime);
-        await sleep(delay);
-        this.requestCount = 1;
-        this.lastRequestTime = Date.now();
-      }
-    } else {
-      this.requestCount = 1;
-      this.lastRequestTime = now;
+    const timePassed = now - this.tokenBucket.lastRefill;
+    this.tokenBucket.tokens = Math.min(
+      this.RATE_LIMIT,
+      this.tokenBucket.tokens + timePassed * (this.RATE_LIMIT / this.RATE_LIMIT_WINDOW)
+    );
+    this.tokenBucket.lastRefill = now;
+
+    if (this.tokenBucket.tokens < 1) {
+      const waitTime = ((1 - this.tokenBucket.tokens) / this.RATE_LIMIT) * this.RATE_LIMIT_WINDOW;
+      await sleep(waitTime);
     }
+    this.tokenBucket.tokens -= 1;
   }
 
   private adjustBatchSize(): void {

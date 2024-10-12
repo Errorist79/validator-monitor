@@ -59,6 +59,28 @@ export class ValidatorService {
       throw error;
     }
   }
+  async getActiveValidators(): Promise<any[]> {
+    try {
+      // Aktif validatörleri veritabanından al
+      const activeValidators = await this.snarkOSDBService.getActiveValidators();
+      
+      // Her bir validatör için ek bilgileri topla
+      const validatorsWithDetails = await Promise.all(activeValidators.map(async (validator) => {
+        const performance = await this.performanceMetricsService.getValidatorPerformance(validator.address);
+        
+        return {
+          ...validator,
+          performance
+        };
+      }));
+
+      logger.info(`Retrieved ${validatorsWithDetails.length} active validators with details`);
+      return validatorsWithDetails;
+    } catch (error) {
+      logger.error('Error getting active validators:', error);
+      throw new Error('Aktif validatörleri alma işlemi başarısız oldu');
+    }
+  }
 
   /* async getValidatorPerformance(address: string): Promise<any> {
     try {

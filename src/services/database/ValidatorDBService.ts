@@ -81,47 +81,75 @@ export class ValidatorDBService extends BaseDBService {
   }
 
   async monitorValidatorPerformance(address: string, timeWindow: number): Promise<{
-    blocksProduced: number,
-    totalRewards: bigint,
-    averageBlockTime: number
+    committeeParticipations: number,
+    signatureSuccesses: number,
+    totalRewards: bigint
   }> {
     const endTime = Date.now();
     const startTime = endTime - timeWindow * 1000;
 
-    const blocksQuery = `
-      SELECT COUNT(*) as blocks_produced, AVG(timestamp - lag(timestamp) OVER (ORDER BY height)) as avg_block_time
-      FROM blocks
-      WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
-    `;
-    const rewardsQuery = `
-      SELECT SUM(reward::numeric) as total_rewards
-      FROM validator_rewards
-      WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
+    const query = `
+      WITH committee_count AS (
+        SELECT COUNT(*) as participations
+        FROM committee_participations
+        WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
+      ), signature_count AS (
+        SELECT COUNT(*) as successful_signatures
+        FROM signature_participations
+        WHERE validator_address = $1 AND success = true AND timestamp BETWEEN $2 AND $3
+      ), rewards_sum AS (
+        SELECT COALESCE(SUM(reward), 0) as total_rewards
+        FROM validator_rewards
+        WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
+      )
+      SELECT 
+        (SELECT participations FROM committee_count) as committee_participations,
+        (SELECT successful_signatures FROM signature_count) as signature_successes,
+        (SELECT total_rewards FROM rewards_sum) as total_rewards
     `;
 
-    const [blocksResult, rewardsResult] = await Promise.all([
-      this.query(blocksQuery, [address, startTime, endTime]),
-      this.query(rewardsQuery, [address, startTime, endTime])
-    ]);
+    const result = await this.query(query, [address, startTime, endTime]);
 
     return {
-      blocksProduced: parseInt(blocksResult.rows[0].blocks_produced),
-      totalRewards: BigInt(rewardsResult.rows[0].total_rewards || 0),
-      averageBlockTime: parseFloat(blocksResult.rows[0].avg_block_time || 0)
+      committeeParticipations: parseInt(result.rows[0].committee_participations),
+      signatureSuccesses: parseInt(result.rows[0].signature_successes),
+      totalRewards: BigInt(result.rows[0].total_rewards)
     };
   }
 
-  async updateValidatorBlockProduction(address: string, blockReward: bigint): Promise<void> {
+  async updateValidatorParticipation(
+    address: string,
+    committeeParticipation: boolean,
+    signatureSuccess: boolean,
+    reward: bigint
+  ): Promise<void> {
+    const query = `
+      INSERT INTO validators (
+        address, 
+        total_committees_participated, 
+        total_signatures_successful, 
+        total_rewards, 
+        last_seen
+      ) VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (address) DO UPDATE SET
+        total_committees_participated = validators.total_committees_participated + $2,
+        total_signatures_successful = validators.total_signatures_successful + $3,
+        total_rewards = validators.total_rewards + $4,
+        last_seen = NOW()
+    `;
     try {
-      await this.query(
-        'UPDATE validators SET total_blocks_produced = total_blocks_produced + 1, total_rewards = total_rewards + $1, last_seen = NOW() WHERE address = $2',
-        [blockReward.toString(), address]
-      );
+      await this.query(query, [
+        address,
+        committeeParticipation ? 1 : 0,
+        signatureSuccess ? 1 : 0,
+        reward.toString()
+      ]);
+      logger.debug(`Updated participation for validator ${address}`);
     } catch (error: unknown) {
       if (error instanceof Error) {
-        throw new Error(`ValidatorDBService updateValidatorBlockProduction error: ${error.message}`);
+        throw new Error(`ValidatorDBService updateValidatorParticipation error: ${error.message}`);
       }
-      throw new Error('ValidatorDBService updateValidatorBlockProduction error: An unknown error occurred');
+      throw new Error('ValidatorDBService updateValidatorParticipation error: An unknown error occurred');
     }
   }
 

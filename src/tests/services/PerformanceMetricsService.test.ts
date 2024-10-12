@@ -7,6 +7,7 @@ import { BlockSyncService } from '../../services/BlockSyncService.js';
 import { CacheService } from '../../services/CacheService.js';
 import { config } from '../../config/index.js';
 import { BaseDBService } from '../../services/database/BaseDBService.js';
+import { ValidatorDBService } from '../../services/database/ValidatorDBService.js';
 jest.mock('../../services/SnarkOSDBService');
 jest.mock('../../services/AleoSDKService');
 jest.mock('../../services/CacheService');
@@ -16,12 +17,14 @@ describe('PerformanceMetricsService', () => {
   let mockAleoSDKService: jest.Mocked<AleoSDKService>;
   let mockBlockSyncService: jest.Mocked<BlockSyncService>;
   let mockCacheService: jest.Mocked<CacheService>;
+  let validatorDBService: ValidatorDBService;
   beforeEach(() => {
     mockAleoSDKService = new AleoSDKService('https://api.explorer.provable.com/v1', 'testnet') as jest.Mocked<AleoSDKService>;
     mockSnarkOSDBService = new SnarkOSDBService() as jest.Mocked<SnarkOSDBService>;
     mockCacheService = new CacheService(config.redis.url) as jest.Mocked<CacheService>;
     const mockBaseDBService = {} as BaseDBService; // Mock bir BaseDBService oluşturun
     mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService, mockCacheService, mockBaseDBService) as jest.Mocked<BlockSyncService>;
+    validatorDBService = new ValidatorDBService(mockSnarkOSDBService, mockAleoSDKService, mockCacheService, mockBaseDBService);
     performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService, mockBlockSyncService, mockCacheService);
   });
 
@@ -52,6 +55,27 @@ describe('PerformanceMetricsService', () => {
     });
 
     // ... Diğer test senaryoları ...
+  });
+
+  describe('getValidatorPerformance', () => {
+    it('should return performance metrics including committee participations and signature successes', async () => {
+      const mockPerformanceData = {
+        committeeParticipations: 50,
+        signatureSuccesses: 48,
+        totalRewards: BigInt(100000),
+        uptimePercentage: 96
+      };
+      jest.spyOn(validatorDBService, 'monitorValidatorPerformance').mockResolvedValue({
+        committeeParticipations: 50,
+        signatureSuccesses: 48,
+        totalRewards: BigInt(100000)
+      });
+      jest.spyOn(performanceMetricsService, 'getValidatorUptime').mockResolvedValue(96);
+
+      const performance = await performanceMetricsService.getValidatorPerformance('test_validator');
+
+      expect(performance).toEqual(mockPerformanceData);
+    });
   });
 
   // ... Diğer testler ...

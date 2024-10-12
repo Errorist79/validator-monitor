@@ -96,9 +96,9 @@ export class SnarkOSDBService {
   }
 
   async monitorValidatorPerformance(address: string, timeWindow: number): Promise<{
-    blocksProduced: number,
-    totalRewards: bigint,
-    averageBlockTime: number
+    committeeParticipations: number,
+    signatureSuccesses: number,
+    totalRewards: bigint
   }> {
     return this.validatorDBService.monitorValidatorPerformance(address, timeWindow);
   }
@@ -107,8 +107,8 @@ export class SnarkOSDBService {
     return this.blockDBService.getLatestProcessedBlockHeight();
   }
 
-  async updateValidatorBlockProduction(address: string, blockReward: bigint): Promise<void> {
-    return this.validatorDBService.updateValidatorBlockProduction(address, blockReward);
+  async updateValidatorParticipation(address: string, committeeParticipation: boolean, signatureSuccess: boolean, reward: bigint): Promise<void> {
+    return this.validatorDBService.updateValidatorParticipation(address, committeeParticipation, signatureSuccess, reward);
   }
 
   async getTotalBlocksInTimeFrame(timeFrame: number): Promise<number> {
@@ -144,6 +144,9 @@ export class SnarkOSDBService {
     uptimePercentage: number
   ): Promise<void> {
     return this.uptimeDBService.updateValidatorUptime(address, startRound, endRound, totalRounds, participatedRounds, uptimePercentage);
+  }
+  async getLatestUptimeSnapshot(validatorAddress: string): Promise<UptimeSnapshotAttributes | null> {
+    return this.uptimeDBService.getLatestUptimeSnapshot(validatorAddress);
   }
 
   async getLastUptimeSnapshot(address: string): Promise<any | null> {

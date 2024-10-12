@@ -9,14 +9,16 @@ export class DatabaseInitializationService extends BaseDBService {
       const tables = [
         'blocks', 'committee_members', 'committee_participation', 'batches',
         'uptime_snapshots', 'validator_rewards', 'delegator_rewards',
-        'delegations', 'validator_status', 'signature_participation'
+        'delegations', 'validator_status', 'signature_participation', 'validators'
       ];
       const indexes = [
         'idx_blocks_round', 'idx_committee_participation_round',
         'idx_batches_round', 'idx_uptime_snapshots_end_round',
         'idx_validator_rewards_address_height', 'idx_delegator_rewards_address_height',
         'idx_delegations_validator_address', 'idx_validator_status_is_active',
-        'idx_signature_participation_validator', 'idx_signature_participation_round'
+        'idx_signature_participation_validator', 'idx_signature_participation_round',
+        'idx_validators_address', 'idx_committee_participation_validator_timestamp',
+        'idx_signature_participation_validator_timestamp', 'idx_validator_rewards_validator_timestamp'
       ];
 
       for (const table of tables) {
@@ -66,7 +68,7 @@ export class DatabaseInitializationService extends BaseDBService {
     try {
       await client.query('BEGIN');
 
-      const tables = ['blocks', 'committee_members', 'committee_participation', 'batches', 'uptime_snapshots', 'signature_participation', 'validator_rewards', 'delegator_rewards', 'delegations', 'validator_status'];
+      const tables = ['blocks', 'committee_members', 'committee_participation', 'batches', 'uptime_snapshots', 'signature_participation', 'validator_rewards', 'delegator_rewards', 'delegations', 'validator_status', 'validators'];
       for (const table of tables) {
         await this.checkAndUpdateTable(client, table);
       }
@@ -112,6 +114,13 @@ export class DatabaseInitializationService extends BaseDBService {
         timestamp BIGINT NOT NULL,
         transactions_count INTEGER NOT NULL,
         block_reward NUMERIC
+      )`,
+      `CREATE TABLE IF NOT EXISTS validators (
+        address TEXT PRIMARY KEY,
+        total_committees_participated BIGINT DEFAULT 0,
+        total_signatures_successful BIGINT DEFAULT 0,
+        total_rewards NUMERIC DEFAULT 0,
+        last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW()
       )`,
       `CREATE TABLE IF NOT EXISTS committee_members (
         address TEXT PRIMARY KEY,
@@ -187,6 +196,7 @@ export class DatabaseInitializationService extends BaseDBService {
         committee_id VARCHAR NOT NULL,
         block_height BIGINT NOT NULL,
         timestamp BIGINT NOT NULL,
+        success BOOLEAN NOT NULL,
         PRIMARY KEY (validator_address, batch_id, round)
       )`
     ];
@@ -212,7 +222,11 @@ export class DatabaseInitializationService extends BaseDBService {
       'CREATE INDEX IF NOT EXISTS idx_delegations_validator_address ON delegations(validator_address)',
       'CREATE INDEX IF NOT EXISTS idx_validator_status_is_active ON validator_status(is_active)',
       'CREATE INDEX IF NOT EXISTS idx_signature_participation_validator ON signature_participation(validator_address)',
-      'CREATE INDEX IF NOT EXISTS idx_signature_participation_round ON signature_participation(round)'
+      'CREATE INDEX IF NOT EXISTS idx_signature_participation_round ON signature_participation(round)',
+      'CREATE INDEX IF NOT EXISTS idx_validators_address ON validators(address)',
+      'CREATE INDEX IF NOT EXISTS idx_committee_participation_validator_timestamp ON committee_participation(validator_address, timestamp)',
+      'CREATE INDEX IF NOT EXISTS idx_signature_participation_validator_timestamp ON signature_participation(validator_address, timestamp, success)',
+      'CREATE INDEX IF NOT EXISTS idx_validator_rewards_validator_timestamp ON validator_rewards(validator_address, timestamp)'
     ];
 
     for (const query of createIndexQueries) {
@@ -334,6 +348,14 @@ export class DatabaseInitializationService extends BaseDBService {
           committee_id: 'VARCHAR NOT NULL',
           block_height: 'BIGINT NOT NULL',
           timestamp: 'BIGINT NOT NULL'
+        };
+      case 'validators':
+        return {
+          address: 'TEXT PRIMARY KEY',
+          total_committees_participated: 'BIGINT DEFAULT 0',
+          total_signatures_successful: 'BIGINT DEFAULT 0',
+          total_rewards: 'NUMERIC DEFAULT 0',
+          last_seen: 'TIMESTAMP WITH TIME ZONE DEFAULT NOW()'
         };
       default:
         return {};

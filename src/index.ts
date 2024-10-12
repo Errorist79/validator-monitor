@@ -92,12 +92,12 @@ async function initialize() {
     alertService = new AlertService(snarkOSDBService, performanceMetricsService);
     rewardsService = new RewardsService(aleoSDKService, snarkOSDBService);
 
+    app.use(express.json());
+    app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService, consensusService, primaryService));
+
+    startServer();
     await tryConnect();
     await blockSyncService.startSyncProcess();
-    startServer();
-
-    app.use(express.json());
-    app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService));
 
   } catch (error) {
     logger.error('Initialization error:', error);
@@ -107,29 +107,21 @@ async function initialize() {
 
 initialize();
 
-app.get('/api/validators', async (req, res) => {
-  try {
-    const validators = await snarkOSDBService.getValidators();
-    res.json(validators);
-  } catch (error) {
-    logger.error('Error occurred while fetching validator information:', error);
-    res.status(500).json({ error: 'Failed to fetch validator information' });
-  }
-});
+// Kaldırılan test rotaları:
+// app.get('/api/test/latest-block', ...);
+// app.get('/api/test/latest-committee', ...);
+// app.get('/api/test/block/:height', ...);
+// app.get('/api/test/transaction/:id', ...);
+// app.get('/api/test/transactions/:height', ...);
+// app.get('/api/test/latest-block-structure', ...);
+// app.get('/api/test/raw-latest-block', ...);
 
-app.get('/api/consensus/round', async (req, res) => {
-  try {
-    const currentRound = await consensusService.getCurrentRound();
-    if (currentRound === null) {
-      res.status(404).json({ error: 'Current round could not be calculated' });
-    } else {
-      res.json({ currentRound });
-    }
-  } catch (error) {
-    logger.error('Error occurred while fetching current round:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error occurred' });
-  }
-});
+// Kaldırılan veya taşınan diğer rotalar:
+// app.get('/api/validators', ...); // Taşındı
+// app.get('/api/consensus/round', ...); // Taşındı
+// app.get('/api/consensus/committee', ...); // Taşındı
+// app.get('/api/primary/transmissions', ...); // Taşındı
+// app.get('/api/alerts/:address', ...); // Eğer kullanılmıyorsa kaldırıldı
 
 app.get('/api/consensus/committee', async (req, res) => {
   try {
@@ -147,116 +139,7 @@ app.get('/api/consensus/committee', async (req, res) => {
   }
 });
 
-app.get('/api/primary/transmissions', async (req, res) => {
-  try {
-    const transmissions = await primaryService.collectTransmissions();
-    res.json({ transmissions });
-  } catch (error) {
-    if (error instanceof Error) {
-      res.status(500).json({ error: error.message });
-    } else {
-      res.status(500).json({ error: 'An unknown error occurred' });
-    }
-  }
-});
-
-// Test routes
-app.get('/api/test/latest-block', async (req, res) => {
-  try {
-    const latestBlock = await aleoSDKService.getLatestBlock();
-    res.json(latestBlock);
-  } catch (error) {
-    logger.error('Error fetching latest block:', error);
-    res.status(500).json({ error: 'Failed to fetch latest block' });
-  }
-});
-
-app.get('/api/test/latest-committee', async (req, res) => {
-  try {
-    const latestCommittee = await aleoSDKService.getLatestCommittee();
-    res.json(latestCommittee);
-  } catch (error) {
-    logger.error('Error fetching latest committee:', error);
-    res.status(500).json({ error: 'Failed to fetch latest committee' });
-  }
-});
-
-app.get('/api/test/block/:height', async (req, res) => {
-  try {
-    const height = parseInt(req.params.height);
-    const block = await aleoSDKService.getBlock(height);
-    res.json(block);
-  } catch (error) {
-    logger.error(`Error fetching block at height ${req.params.height}:`, error);
-    res.status(500).json({ error: `Failed to fetch block at height ${req.params.height}` });
-  }
-});
-
-app.get('/api/test/transaction/:id', async (req, res) => {
-  try {
-    const transaction = await aleoSDKService.getTransaction(req.params.id);
-    res.json(transaction);
-  } catch (error) {
-    logger.error(`Error fetching transaction with id ${req.params.id}:`, error);
-    res.status(500).json({ error: `Failed to fetch transaction with id ${req.params.id}` });
-  }
-});
-
-app.get('/api/test/transactions/:height', async (req, res) => {
-  try {
-    const height = parseInt(req.params.height);
-    const transactions = await aleoSDKService.getTransactions(height);
-    res.json(transactions);
-  } catch (error) {
-    logger.error(`Error fetching transactions for block height ${req.params.height}:`, error);
-    res.status(500).json({ error: `Failed to fetch transactions for block height ${req.params.height}` });
-  }
-});
-
-// Add below the existing imports
-
-// Add below other routes
-app.get('/api/test/latest-block-structure', async (req, res) => {
-  try {
-    const latestBlock = await aleoSDKService.getLatestBlock();
-    if (latestBlock) {
-      res.json(latestBlock);
-    } else {
-      res.status(404).json({ error: 'Latest block not found' });
-    }
-  } catch (error) {
-    logger.error('Error fetching latest block structure:', error);
-    if (error instanceof ValidationError) {
-      res.status(400).json({ error: error.message });
-    } else if (error instanceof NotFoundError) {
-      res.status(404).json({ error: error.message });
-    } else {
-      res.status(500).json({ error: 'Failed to fetch latest block structure' });
-    }
-  }
-});
-
-// Raw latest block endpoint
-app.get('/api/test/raw-latest-block', async (req, res) => {
-  try {
-    const latestBlock = await aleoSDKService.getRawLatestBlock();
-    res.json(latestBlock);
-  } catch (error) {
-    logger.error('Raw latest block fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch raw latest block' });
-  }
-});
-
-/* app.get('/api/alerts/:address', async (req, res) => {
-  try {
-    const { address } = req.params;
-    const alerts = await alertService.checkAllAlerts(address);
-    res.json(alerts);
-  } catch (error) {
-    logger.error('Error checking alerts:', error);
-    res.status(500).json({ error: 'Failed to check alerts' });
-  }
-}); */// Her 5 dakikada bir validator statülerini güncelle
+// Her 5 dakikada bir validator statülerini güncelle
 cron.schedule('*/5 * * * *', async () => {
   try {
     logger.info('Starting validator status update');

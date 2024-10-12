@@ -6,6 +6,7 @@ import { Block, BlockAttributes } from '../database/models/Block.js';
 import { BlockSyncService } from '../services/BlockSyncService.js';
 import { CacheService } from '../services/CacheService.js';
 import { BaseDBService } from '../services/database/BaseDBService.js'; // Added import for BaseDBService
+import { ValidatorDBService } from '../services/database/ValidatorDBService.js';
 // Jest'in global fonksiyonlarını tanımlayalım
 declare const describe: jest.Describe;
 declare const beforeAll: jest.Lifecycle;
@@ -19,6 +20,7 @@ describe('Uptime Calculation', () => {
   let performanceMetricsService: PerformanceMetricsService;
   let mockBlockSyncService: jest.Mocked<BlockSyncService>;
   let cacheService: CacheService;
+  let validatorDBService: ValidatorDBService;
   const testValidatorAddress = 'test_validator';
 
   beforeAll(async () => {
@@ -27,9 +29,10 @@ describe('Uptime Calculation', () => {
     snarkOSDBService = new SnarkOSDBService();
     aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet'); // AleoSDKService örneği oluştur
     cacheService = new CacheService(config.redis.url);
+    validatorDBService = new ValidatorDBService();
     const baseDBService = new BaseDBService(); // Gerçek bir BaseDBService oluşturun
     mockBlockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService, cacheService, baseDBService) as jest.Mocked<BlockSyncService>;
-    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, mockBlockSyncService, cacheService);
+    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, mockBlockSyncService, cacheService, validatorDBService);
 
     // Test veritabanını hazırla
     await snarkOSDBService.initializeDatabase();
