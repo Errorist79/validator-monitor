@@ -91,11 +91,11 @@ export class ValidatorDBService extends BaseDBService {
     const query = `
       WITH committee_count AS (
         SELECT COUNT(*) as participations
-        FROM committee_participations
+        FROM committee_participation
         WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
       ), signature_count AS (
         SELECT COUNT(*) as successful_signatures
-        FROM signature_participations
+        FROM signature_participation
         WHERE validator_address = $1 AND success = true AND timestamp BETWEEN $2 AND $3
       ), rewards_sum AS (
         SELECT COALESCE(SUM(reward), 0) as total_rewards

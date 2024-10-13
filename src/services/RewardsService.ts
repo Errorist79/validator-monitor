@@ -78,7 +78,7 @@ export class RewardsService {
   }
 
   private getBlockReward(block: APIBlock): number | null {
-    const blockReward = block.ratifications.find(r => r.type === 'BlockReward');
+    const blockReward = block.ratifications.find(r => r.type === 'block_reward');
     return blockReward && blockReward.data ? Number(blockReward.data) : null;
   }
 
