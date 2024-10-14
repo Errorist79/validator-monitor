@@ -123,9 +123,13 @@ export class SnarkOSDBService {
     return this.validatorDBService.getTotalValidatorsCount();
   }
 
-  async getBlockCountBetween(startHeight: number, endHeight: number): Promise<number> {
+ /*  async getBlockCountBetween(startHeight: number, endHeight: number): Promise<number> {
     return this.blockDBService.getBlockCountBetween(startHeight, endHeight);
-  }
+  } */
+
+  async getLatestBlocks(limit: number = 100): Promise<any[]> {
+    return this.blockDBService.getLatestBlocks(limit);
+  } 
 
   async getBlockCountInHeightRange(startHeight: number, endHeight: number): Promise<number> {
     return this.blockDBService.getBlockCountInHeightRange(startHeight, endHeight);
@@ -170,10 +174,6 @@ export class SnarkOSDBService {
   ): Promise<void> {
     await this.committeeDBService.insertOrUpdateCommitteeMember(address, blockHeight, total_stake, isOpen, commission);
     await this.validatorDBService.updateValidatorStatus(address, BigInt(blockHeight), true);
-  }
-
-  async getValidatorBlockCountInRange(validatorAddress: string, startHeight: number, endHeight: number): Promise<number> {
-    return this.validatorDBService.getValidatorBlockCountInRange(validatorAddress, startHeight, endHeight);
   }
 
   async getValidatorByAddress(address: string): Promise<any | null> {

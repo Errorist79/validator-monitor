@@ -347,18 +347,6 @@ export class AleoSDKService {
     }
   }
 
-  private handleAxiosError(error: any): void {
-    if (axios.isAxiosError(error)) {
-      logger.error('Axios error', {
-        message: error.message,
-        status: error.response?.status,
-        data: error.response?.data
-      });
-    } else {
-      logger.error('Unknown error', { error: error.message });
-    }
-  }
-
   private convertToAPIBlock(rawBlock: any): APIBlock {
     const apiBlock = {
       height: rawBlock.header.metadata.height,

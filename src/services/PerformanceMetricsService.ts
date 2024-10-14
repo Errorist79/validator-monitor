@@ -9,6 +9,7 @@ import { UptimeSnapshotAttributes } from '../database/models/UptimeSnapshot.js';
 import pLimit from 'p-limit';
 import { CommitteeData } from '../database/models/CommitteeParticipation.js';
 import { ValidatorDBService } from './database/ValidatorDBService.js';
+import { ValidatorService } from './ValidatorService.js';
 
 
 
@@ -25,7 +26,8 @@ export class PerformanceMetricsService {
     private aleoSDKService: AleoSDKService,
     private blockSyncService: BlockSyncService,
     private cacheService: CacheService,
-    private validatorDBService: ValidatorDBService
+    private validatorDBService: ValidatorDBService,
+    private validatorService: ValidatorService
   ) {
     this.SYNC_START_BLOCK = config.sync.startBlock;
     this.CALCULATION_INTERVAL = config.uptime.calculationInterval;
@@ -303,6 +305,37 @@ export class PerformanceMetricsService {
     await this.cacheService.set(cacheKey, count);
     return count;
   }
+
+  async getNetworkPerformance(timeFrame: number = 24 * 60 * 60): Promise<any> {
+    try {
+      const cacheKey = `network_performance_${timeFrame}`;
+      const cachedData = await this.cacheService.get(cacheKey);
+      if (cachedData !== null && typeof cachedData === 'string') {
+        return JSON.parse(cachedData);
+      }
+
+      const latestBlocks = await this.snarkOSDBService.getLatestBlocks();
+      const averageBlockTime = this.validatorService.calculateAverageBlockTime(latestBlocks);
+
+      const totalBlocksInTimeFrame = await this.snarkOSDBService.getTotalBlocksInTimeFrame(timeFrame);
+      const activeValidatorsCount = await this.snarkOSDBService.getTotalValidatorsCount();
+
+      const result = {
+        averageBlockTime,
+        totalBlocksInTimeFrame,
+        activeValidatorsCount,
+        timeFrame
+      };
+
+      await this.cacheService.set(cacheKey, JSON.stringify(result), 5 * 60); // 5 dakika önbelleğe al
+
+      return result;
+    } catch (error) {
+      logger.error('Ağ performansı alınırken hata oluştu:', error);
+      throw error;
+    }
+  }
+
   async getValidatorPerformance(validatorAddress: string, timeFrame: number = 24 * 60 * 60): Promise<any> {
     try {
       const cacheKey = `validator_performance_${validatorAddress}_${timeFrame}`;
@@ -316,7 +349,8 @@ export class PerformanceMetricsService {
 
       const result = {
         ...performance,
-        uptimePercentage: uptime
+        uptimePercentage: uptime,
+        timeFrame: timeFrame
       };
 
       await this.cacheService.set(cacheKey, JSON.stringify(result), 5 * 60); // Cache for 5 minutes

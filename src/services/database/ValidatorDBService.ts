@@ -184,20 +184,6 @@ export class ValidatorDBService extends BaseDBService {
     }
   }
 
-  async getValidatorBlockCountInRange(validatorAddress: string, startHeight: number, endHeight: number): Promise<number> {
-    try {
-      const result = await this.query(`
-        SELECT COUNT(*) as block_count
-        FROM blocks
-        WHERE validator_address = $1 AND height BETWEEN $2 AND $3
-      `, [validatorAddress, startHeight, endHeight]);
-      return parseInt(result.rows[0].block_count);
-    } catch (error) {
-      logger.error(`Error getting blocks count for validator ${validatorAddress} in range:`, error);
-      throw error;
-    }
-  }
-
   async getTotalValidatorsCount(): Promise<number> {
     try {
       const result = await this.query(`

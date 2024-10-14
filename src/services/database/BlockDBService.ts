@@ -179,16 +179,18 @@ export class BlockDBService extends BaseDBService {
     return parseInt(result.rows[0].block_count);
   }
 
-  async getBlockCountBetween(startHeight: number, endHeight: number): Promise<number> {
+  async getLatestBlocks(limit: number = 100): Promise<any[]> {
     try {
-      const result = await this.query(`
-        SELECT COUNT(*) as block_count
+      const query = `
+        SELECT *
         FROM blocks
-        WHERE height BETWEEN $1 AND $2
-      `, [startHeight, endHeight]);
-      return parseInt(result.rows[0].block_count);
+        ORDER BY height DESC
+        LIMIT $1
+      `;
+      const result = await this.query(query, [limit]);
+      return result.rows;
     } catch (error) {
-      logger.error('Error getting block count between heights:', error);
+      logger.error('Error getting latest blocks:', error);
       throw error;
     }
   }

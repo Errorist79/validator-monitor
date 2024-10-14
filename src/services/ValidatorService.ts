@@ -82,85 +82,29 @@ export class ValidatorService {
     }
   }
 
-  /* async getValidatorPerformance(address: string): Promise<any> {
-    try {
-      const validator = await this.baseDBService.executeQuery(
-        'SELECT * FROM validators WHERE address = $1',
-        [address]
-      );
-      if (validator.rows.length === 0) {
-        throw new Error('Validator not found');
-      }
-
-      const recentBlocks = await this.snarkOSDBService.getBlocksByValidator(address, 100);
-      
-      const performance = {
-        blocksProduced: recentBlocks.length,
-        averageBlockTime: this.calculateAverageBlockTime(recentBlocks),
-        totalBlocksProduced: validator.rows[0].total_blocks_produced,
-        totalRewards: validator.rows[0].total_rewards.toString()
-      };
-
-      return {
-        validator: {
-          ...validator.rows[0],
-          stake: validator.rows[0].stake.toString(), // Convert BigInt to string
-          bonded: validator.rows[0].bonded.toString() // Convert BigInt to string
-        },
-        performance
-      };
-    } catch (error: unknown) {
-      if (error instanceof Error) {
-        throw new Error(`Validator performance calculation error: ${error.message}`);
-      } else {
-        throw new Error('An unknown error occurred during validator performance calculation');
-      }
-    }
-  } */
-
-  /* async updateValidatorUptime(validatorAddress: string): Promise<void> {
-    try {
-      const uptime = await this.performanceMetricsService.calculateUptime(validatorAddress);
-      const lastUptimeUpdate = new Date();
-      if (uptime !== null) {
-        await this.snarkOSDBService.updateValidatorUptime(validatorAddress, uptime, lastUptimeUpdate);
-        logger.info(`Updated uptime for validator ${validatorAddress}: ${uptime}%`);
-      } else {
-        logger.warn(`Unable to calculate uptime for validator ${validatorAddress}`);
-      }
-    } catch (error) {
-      logger.error(`Error updating uptime for validator ${validatorAddress}:`, error);
-      throw error;
-    }
+  public calculateAverageBlockTime(blocks: any[]): number {
+    if (blocks.length < 2) {
+      return 0; // Cannot calculate average, return 0
   }
 
-  async updateAllValidatorsUptime(): Promise<void> {
-    try {
-      const validators = await this.snarkOSDBService.getValidators();
-      for (const validator of validators) {
-        await this.updateValidatorUptime(validator.address);
-      }
-      logger.info('Updated uptime for all validators');
-    } catch (error) {
-      logger.error('Error updating uptime for all validators:', error);
-    }
-  } */
+  // Sort blocks by timestamp (oldest to newest)
+  const sortedBlocks = blocks.sort((a, b) => a.timestamp - b.timestamp);
 
-/*   async getAllValidators(): Promise<any[]> {
-    return this.snarkOSDBService.getValidators();
-  }
+  // Calculate time differences between consecutive blocks
+  const timeDifferences = sortedBlocks.slice(1).map((block, index) => {
+    const currentBlockTime = new Date(block.timestamp).getTime();
+    const previousBlockTime = new Date(sortedBlocks[index].timestamp).getTime();
+    return currentBlockTime - previousBlockTime;
+  });
 
-  private calculateAverageBlockTime(blocks: any[]): number {
-    if (blocks.length < 2) return 0;
-    const timeDiffs = blocks.slice(1).map((block, index) => 
-      new Date(block.timestamp).getTime() - new Date(blocks[index].timestamp).getTime()
-    );
-    return timeDiffs.reduce((sum, diff) => sum + diff, 0) / timeDiffs.length;
-  }
+  // Calculate average time difference
+  const averageTimeDifference = timeDifferences.reduce((sum, diff) => sum + diff, 0) / timeDifferences.length;
+  return averageTimeDifference / 1000;
+}
 
   private calculateTotalFees(blocks: any[]): string {
     return blocks.reduce((sum, block) => sum + BigInt(block.total_fees), BigInt(0)).toString();
-  } */
+  } 
 }
 
 export default ValidatorService;
