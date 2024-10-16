@@ -23,7 +23,7 @@ export default function(
 ) {
   const router = Router();
 
-  router.use('/validators', validatorsRoutes(validatorService));
+  router.use('/validators', validatorsRoutes(validatorService, performanceMetricsService));
   router.use('/consensus', consensusRoutes(consensusService));
   router.use('/primary', primaryRoutes(primaryService));
   // Diğer rotaları ekleyin

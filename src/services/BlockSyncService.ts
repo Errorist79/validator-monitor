@@ -18,7 +18,7 @@ export class BlockSyncService {
   private readonly MIN_BATCH_SIZE = 10;
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_DELAY = 3000; // 3 seconds
-  private readonly SYNC_START_BLOCK: number;
+  private readonly SYNC_START_BLOCK: bigint;
   private readonly SYNC_THRESHOLD = 10;
   private readonly MAX_CONCURRENT_BATCHES = 5;
   private readonly RATE_LIMIT = 10; // Maximum requests per second
@@ -52,14 +52,14 @@ export class BlockSyncService {
     private cacheService: CacheService,
     private baseDBService: BaseDBService
   ) {
-    this.SYNC_START_BLOCK = config.sync.startBlock;
+    this.SYNC_START_BLOCK = BigInt(config.sync.startBlock);
     this.currentBatchSize = this.INITIAL_BATCH_SIZE;
     initializeWasm(); // Initialize WASM
     this.initializeLastSyncedBlockHeight();
   }
 
   private async initializeLastSyncedBlockHeight(): Promise<void> {
-    this.lastSyncedBlockHeight = await this.getLatestSyncedBlockHeight();
+    this.lastSyncedBlockHeight = Number(await this.getLatestSyncedBlockHeight());
   }
 
   async startSyncProcess(): Promise<void> {
@@ -75,15 +75,15 @@ export class BlockSyncService {
         throw new Error('Failed to get latest network block height');
       }
 
-      const startHeight = Math.max(await this.getLatestSyncedBlockHeight(), this.SYNC_START_BLOCK);
-      const endHeight = latestNetworkBlock;
+      const startHeight = await this.getLatestSyncedBlockHeight();
+      const endHeight = BigInt(latestNetworkBlock);
 
       const limit = pLimit(this.MAX_CONCURRENT_BATCHES);
       const tasks = [];
 
-      for (let height = startHeight; height <= endHeight; height += this.currentBatchSize) {
-        const batchEndHeight = Math.min(height + this.currentBatchSize - 1, endHeight);
-        tasks.push(limit(() => this.syncBlockRangeWithRetry(height, batchEndHeight)));
+      for (let height = startHeight; height <= endHeight; height += BigInt(this.currentBatchSize)) {
+        const batchEndHeight = height + BigInt(this.currentBatchSize) - BigInt(1) > endHeight ? endHeight : height + BigInt(this.currentBatchSize) - BigInt(1);
+        tasks.push(limit(() => this.syncBlockRangeWithRetry(Number(height), Number(batchEndHeight))));
       }
 
       await Promise.all(tasks);
@@ -122,7 +122,7 @@ export class BlockSyncService {
         const latestSyncedBlock = await this.getLatestSyncedBlockHeight();
         if (latestNetworkBlock > latestSyncedBlock) {
           this.previousSyncedBlockHeight = this.lastSyncedBlockHeight;
-          await this.syncBlockRange(latestSyncedBlock + 1, latestNetworkBlock);
+          await this.syncBlockRange(Number(latestSyncedBlock) + 1, latestNetworkBlock);
           this.lastSyncedBlockHeight = latestNetworkBlock;
           logger.info(`Blocks synchronized up to height ${latestNetworkBlock}`);
         }
@@ -176,7 +176,7 @@ export class BlockSyncService {
       let startHeight = await this.getLatestSyncedBlockHeight();
       
       if (latestNetworkBlock > startHeight) {
-        await this.syncBlockRange(startHeight + 1, latestNetworkBlock);
+        await this.syncBlockRange(Number(startHeight) + 1, latestNetworkBlock);
         logger.info(`Blocks synchronized up to height ${latestNetworkBlock}`);
       } else {
         logger.info('Blocks are already up to date');
@@ -392,8 +392,8 @@ export class BlockSyncService {
       return false;
     }
 
-    const syncDifference = latestNetworkBlock - latestSyncedBlock;
-    const processDifference = latestSyncedBlock - latestProcessedBlock;
+    const syncDifference = Number(latestNetworkBlock) - Number(latestSyncedBlock);
+    const processDifference = Number(latestSyncedBlock) - Number(latestProcessedBlock);
 
     return syncDifference <= this.SYNC_THRESHOLD && processDifference <= this.SYNC_THRESHOLD;
   }
@@ -498,9 +498,9 @@ export class BlockSyncService {
     }
   }
 
-  public async getLatestSyncedBlockHeight(): Promise<number> {
+  public async getLatestSyncedBlockHeight(): Promise<bigint> {
     const latestSyncedBlock = await this.snarkOSDBService.getLatestBlockHeight();
-    return Math.max(latestSyncedBlock, this.SYNC_START_BLOCK - 1);
+    return latestSyncedBlock > this.SYNC_START_BLOCK ? latestSyncedBlock : this.SYNC_START_BLOCK - BigInt(1);
   }
 }
 

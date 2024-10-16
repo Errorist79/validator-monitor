@@ -12,8 +12,8 @@ export default function(validatorService: ValidatorService, performanceMetricsSe
       const validators = await validatorService.getActiveValidators();
       res.json(validators);
     } catch (error) {
-      console.error('Error occurred while fetching validator information:', error);
-      res.status(500).json({ error: 'Failed to fetch validator information' });
+      logger.error('Error occurred while fetching validator information:', error);
+      res.status(500).json({ error: 'Validatör bilgileri alınırken bir hata oluştu' });
     }
   });
 

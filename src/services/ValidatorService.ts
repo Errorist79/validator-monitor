@@ -1,15 +1,23 @@
 import { AleoSDKService } from './AleoSDKService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
-import { PerformanceMetricsService } from './PerformanceMetricsService.js';
+import { ValidatorDBService } from './database/ValidatorDBService.js';
 import logger from '../utils/logger.js';
 import pLimit from 'p-limit';
+import { PerformanceMetricsService } from './PerformanceMetricsService.js';
+import { serializeBigInt } from '../utils/bigIntSerializer.js';
 
 export class ValidatorService {
+  private performanceMetricsService: PerformanceMetricsService | null = null;
+
   constructor(
     private aleoSDKService: AleoSDKService,
     private snarkOSDBService: SnarkOSDBService,
-    private performanceMetricsService: PerformanceMetricsService
+    private validatorDBService: ValidatorDBService
   ) {}
+
+  setPerformanceMetricsService(service: PerformanceMetricsService) {
+    this.performanceMetricsService = service;
+  }
 
   async updateValidatorStatuses(): Promise<void> {
     try {
@@ -59,23 +67,42 @@ export class ValidatorService {
       throw error;
     }
   }
+
   async getActiveValidators(): Promise<any[]> {
     try {
-      // Aktif validatörleri veritabanından al
       const activeValidators = await this.snarkOSDBService.getActiveValidators();
       
-      // Her bir validatör için ek bilgileri topla
+      if (!this.performanceMetricsService) {
+        throw new Error('PerformanceMetricsService has not been set');
+      }
+
+      logger.debug(`Retrieved ${activeValidators.length} active validators from SnarkOSDBService`);
+
       const validatorsWithDetails = await Promise.all(activeValidators.map(async (validator) => {
-        const performance = await this.performanceMetricsService.getValidatorPerformance(validator.address);
-        
-        return {
-          ...validator,
-          performance
-        };
+        if (!validator.address) {
+          logger.warn('Validator found with undefined address', validator);
+          return null;
+        }
+        try {
+          const performance = await this.performanceMetricsService!.getValidatorPerformance(validator.address);
+          return serializeBigInt({
+            ...validator,
+            stake: validator.stake.toString(),
+            performance
+          });
+        } catch (error) {
+          logger.error(`Error getting performance for validator ${validator.address}:`, error);
+          return serializeBigInt({
+            ...validator,
+            stake: validator.stake.toString(),
+            performance: null
+          });
+        }
       }));
 
-      logger.info(`Retrieved ${validatorsWithDetails.length} active validators with details`);
-      return validatorsWithDetails;
+      const filteredValidators = validatorsWithDetails.filter(v => v !== null);
+      logger.info(`Retrieved ${filteredValidators.length} active validators with details`);
+      return filteredValidators;
     } catch (error) {
       logger.error('Error getting active validators:', error);
       throw new Error('Aktif validatörleri alma işlemi başarısız oldu');

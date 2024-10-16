@@ -81,14 +81,22 @@ export class CommitteeDBService extends BaseDBService {
     }
   }
 
-  async getEarliestValidatorRound(validatorAddress: string): Promise<bigint | null> {
+  async getEarliestValidatorRound(validatorAddress: string): Promise<bigint> {
     const query = `
       SELECT MIN(round) as earliest_round
       FROM committee_participation
       WHERE validator_address = $1
     `;
-    const result = await this.query(query, [validatorAddress]);
-    return result.rows[0]?.earliest_round ? BigInt(result.rows[0].earliest_round) : null;
+    try {
+      const result = await this.query(query, [validatorAddress]);
+      if (result.rows.length === 0 || result.rows[0].earliest_round === null) {
+        return BigInt(0);
+      }
+      return BigInt(result.rows[0].earliest_round.toString());
+    } catch (error) {
+      logger.error(`Error fetching earliest validator round for ${validatorAddress}:`, error);
+      throw error;
+    }
   }
 
   async getTotalCommittees(startRound: bigint, endRound: bigint): Promise<{ committee_id: string, rounds: bigint[] }[]> {
@@ -99,7 +107,7 @@ export class CommitteeDBService extends BaseDBService {
       GROUP BY committee_id
     `;
     const result = await this.query(query, [startRound.toString(), endRound.toString()]);
-    return result.rows.map(row => ({
+    return result.rows.map((row: { committee_id: string; rounds: string[] }) => ({
       committee_id: row.committee_id,
       rounds: row.rounds.map((round: string) => BigInt(round))
     }));
@@ -232,12 +240,13 @@ export class CommitteeDBService extends BaseDBService {
       s.committee_id,
       s.block_height,
       s.timestamp
+      // success değerini kaldırdık, varsayılan değer kullanılacak
     ]);
 
     const query = format(`
-      INSERT INTO signature_participation (validator_address, batch_id, round, committee_id, block_height, timestamp)
-      VALUES %L
-      ON CONFLICT DO NOTHING
+      INSERT INTO signature_participation (
+      validator_address, batch_id, round, committee_id, block_height, timestamp
+    ) VALUES %L ON CONFLICT DO NOTHING
     `, values);
 
     if (client) {

@@ -1,5 +1,6 @@
 import { BaseDBService } from './BaseDBService.js';
 import logger from '../../utils/logger.js';
+import { serializeBigInt } from '../../utils/bigIntSerializer.js';
 
 interface Block {
   total_fees: string;
@@ -52,13 +53,38 @@ export class ValidatorDBService extends BaseDBService {
     await this.query(query, [address]);
   }
 
-  async getActiveValidators(): Promise<string[]> {
-    const query = 'SELECT address FROM committee_members WHERE is_active = true';
-    const result = await this.query(query);
-    logger.debug(`Retrieved ${result.rows.length} active validators`);
-    return result.rows.map((row: { address: string }) => row.address);
+  async getActiveValidators(): Promise<{ address: string; stake: bigint; isOpen: boolean; commission: number }[]> {
+    try {
+      const query = `
+        SELECT address, total_stake, is_open, commission
+        FROM committee_members
+        WHERE is_active = true
+      `;
+      const result = await this.query(query);
+      logger.debug(`Retrieved ${result.rows.length} active validators`);
+      return result.rows.map((row: { address: string; total_stake: string; is_open: boolean; commission: string }) => ({
+        address: row.address,
+        stake: BigInt(row.total_stake),
+        isOpen: row.is_open,
+        commission: parseFloat(row.commission)
+      }));
+    } catch (error) {
+      logger.error('Aktif validatörleri alırken hata oluştu:', error);
+      throw error;
+    }
   }
 
+  async getInactiveValidators(): Promise<string[]> {
+    const query = `
+        SELECT address, total_stake, is_open, commission
+        FROM committee_members
+        WHERE is_active = false
+      `;
+    const result = await this.query(query);
+    logger.debug(`Retrieved ${result.rows.length} inactive validators`);
+    return result.rows.map((row: { address: string }) => row.address);
+  }
+  
   async updateValidatorStatus(address: string, currentRound: bigint, isActive: boolean): Promise<void> {
     const query = `
       INSERT INTO validator_status (address, last_active_round, consecutive_inactive_rounds, is_active, last_updated)
@@ -80,41 +106,54 @@ export class ValidatorDBService extends BaseDBService {
     logger.debug(`Updated status for validator ${address}: isActive=${isActive}, lastActiveRound=${currentRound}`);
   }
 
-  async monitorValidatorPerformance(address: string, timeWindow: number): Promise<{
+  private async queryPerformance(address: string, startTime: number, endTime: number): Promise<{
     committeeParticipations: number,
-    signatureSuccesses: number,
-    totalRewards: bigint
+    totalSignatures: number,
+    totalBatchesProduced: number,
+    totalRewards: string
   }> {
-    const endTime = Date.now();
-    const startTime = endTime - timeWindow * 1000;
-
+    logger.debug(`Querying performance for ${address} from ${startTime} to ${endTime}`);
+    
     const query = `
       WITH committee_count AS (
         SELECT COUNT(*) as participations
         FROM committee_participation
-        WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
+        WHERE validator_address = $1 AND timestamp >= $2 AND timestamp <= $3
       ), signature_count AS (
-        SELECT COUNT(*) as successful_signatures
+        SELECT COUNT(*) as total_signatures
         FROM signature_participation
-        WHERE validator_address = $1 AND success = true AND timestamp BETWEEN $2 AND $3
+        WHERE validator_address = $1 AND timestamp >= $2 AND timestamp <= $3
+      ), batch_count AS (
+        SELECT COUNT(*) as total_batches
+        FROM batches
+        WHERE author = $1 AND timestamp >= $2 AND timestamp <= $3
       ), rewards_sum AS (
-        SELECT COALESCE(SUM(reward), 0) as total_rewards
+        SELECT COALESCE(SUM(CAST(reward AS NUMERIC)), 0) as total_rewards
         FROM validator_rewards
-        WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
+        WHERE validator_address = $1 AND timestamp >= $2 AND timestamp <= $3
       )
       SELECT 
         (SELECT participations FROM committee_count) as committee_participations,
-        (SELECT successful_signatures FROM signature_count) as signature_successes,
+        (SELECT total_signatures FROM signature_count) as total_signatures,
+        (SELECT total_batches FROM batch_count) as total_batches_produced,
         (SELECT total_rewards FROM rewards_sum) as total_rewards
     `;
 
-    const result = await this.query(query, [address, startTime, endTime]);
+    try {
+      const result = await this.query(query, [address, startTime, endTime]);
+      logger.debug(`Raw query result for ${address}: ${JSON.stringify(serializeBigInt(result.rows[0]))}`);
 
-    return {
-      committeeParticipations: parseInt(result.rows[0].committee_participations),
-      signatureSuccesses: parseInt(result.rows[0].signature_successes),
-      totalRewards: BigInt(result.rows[0].total_rewards)
-    };
+      return serializeBigInt({
+        committeeParticipations: parseInt(result.rows[0].committee_participations) || 0,
+        totalSignatures: parseInt(result.rows[0].total_signatures) || 0,
+        totalBatchesProduced: parseInt(result.rows[0].total_batches_produced) || 0,
+        totalRewards: result.rows[0].total_rewards?.toString() || '0'
+      });
+    } catch (error) {
+      logger.error(`Error in queryPerformance for ${address}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      logger.debug(`Query parameters: address=${address}, startTime=${startTime}, endTime=${endTime}`);
+      throw error;
+    }
   }
 
   async updateValidatorParticipation(
@@ -198,13 +237,60 @@ export class ValidatorDBService extends BaseDBService {
     }
   }
 
-  async getDelegators(validatorAddress: string): Promise<any[]> {
-    const query = `
-      SELECT d.delegator_address, d.amount
-      FROM delegations d
-      WHERE d.validator_address = $1
-    `;
+  async getTotalValidatorStake(address: string): Promise<bigint> {
+    const query = 'SELECT stake FROM validators WHERE address = $1';
+    const result = await this.query(query, [address]);
+    return result.rows.length > 0 ? BigInt(result.rows[0].stake) : BigInt(0);
+  }
+
+  async getValidatorInfo(address: string): Promise<{ totalStake: bigint; commissionRate: number }> {
+    const query = 'SELECT stake, commission_rate FROM validators WHERE address = $1';
+    const result = await this.query(query, [address]);
+    if (result.rows.length === 0) {
+      throw new Error(`Validator not found: ${address}`);
+    }
+    return {
+      totalStake: BigInt(result.rows[0].stake),
+      commissionRate: result.rows[0].commission_rate
+    };
+  }
+
+  async getDelegators(validatorAddress: string): Promise<Array<{ address: string; amount: bigint }>> {
+    const query = 'SELECT delegator_address, amount FROM delegations WHERE validator_address = $1';
     const result = await this.query(query, [validatorAddress]);
-    return result.rows;
+    return result.rows.map((row: { delegator_address: string; amount: string }) => ({
+      address: row.delegator_address,
+      amount: BigInt(row.amount)
+    }));
+  }
+
+  async monitorValidatorPerformance(address: string, timeWindow: number): Promise<{
+    committeeParticipations: number,
+    totalSignatures: number,
+    totalBatchesProduced: number,
+    totalRewards: string,
+    performanceScore: number
+  }> {
+    const endTime = Math.floor(Date.now() / 1000);
+    let startTime = endTime - timeWindow;
+    
+    logger.debug(`Monitoring performance for validator ${address} from ${new Date(startTime * 1000)} to ${new Date(endTime * 1000)}`);
+
+    let result = await this.queryPerformance(address, startTime, endTime);
+
+    if (result.committeeParticipations === 0 && result.totalSignatures === 0 && result.totalBatchesProduced === 0) {
+      const extendedStartTime = endTime - (timeWindow * 2);
+      logger.debug(`No activity found. Extending time range to ${new Date(extendedStartTime * 1000)}`);
+      result = await this.queryPerformance(address, extendedStartTime, endTime);
+    }
+
+    const signatureRate = result.committeeParticipations > 0 ? result.totalSignatures / result.committeeParticipations : 0;
+    const batchRate = result.committeeParticipations > 0 ? result.totalBatchesProduced / result.committeeParticipations : 0;
+    const performanceScore = Math.min(((signatureRate + batchRate) / 2) * 100, 100);
+
+    return serializeBigInt({
+      ...result,
+      performanceScore: Number(performanceScore.toFixed(2))
+    });
   }
 }

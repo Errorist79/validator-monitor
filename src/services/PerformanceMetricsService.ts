@@ -10,7 +10,7 @@ import pLimit from 'p-limit';
 import { CommitteeData } from '../database/models/CommitteeParticipation.js';
 import { ValidatorDBService } from './database/ValidatorDBService.js';
 import { ValidatorService } from './ValidatorService.js';
-
+import { serializeBigInt } from '../utils/bigIntSerializer.js';
 
 
 export class PerformanceMetricsService {
@@ -26,9 +26,10 @@ export class PerformanceMetricsService {
     private aleoSDKService: AleoSDKService,
     private blockSyncService: BlockSyncService,
     private cacheService: CacheService,
-    private validatorDBService: ValidatorDBService,
-    private validatorService: ValidatorService
+    private validatorService: ValidatorService,
+    private validatorDBService: ValidatorDBService
   ) {
+    this.validatorService.setPerformanceMetricsService(this);
     this.SYNC_START_BLOCK = config.sync.startBlock;
     this.CALCULATION_INTERVAL = config.uptime.calculationInterval;
     this.CALCULATION_ROUND_SPAN = config.uptime.calculationRoundSpan;
@@ -126,66 +127,80 @@ export class PerformanceMetricsService {
   }
   async getValidatorUptime(validatorAddress: string): Promise<number | null> {
     try {
-      logger.debug(`Fetching uptime for validator ${validatorAddress}`);
+      logger.debug(`Validatör ${validatorAddress} için uptime alınıyor`);
       
       const latestUptimeSnapshot = await this.snarkOSDBService.getLatestUptimeSnapshot(validatorAddress);
       
       if (!latestUptimeSnapshot) {
-        logger.warn(`No uptime snapshot found for validator ${validatorAddress}`);
+        logger.warn(`Validatör ${validatorAddress} için uptime snapshot bulunamadı`);
         return null;
       }
       
       const currentTime = new Date();
-      const snapshotAge = (currentTime.getTime() - latestUptimeSnapshot.calculated_at.getTime()) / (1000 * 60 * 60); // Age in hours
+      const snapshotAge = (currentTime.getTime() - latestUptimeSnapshot.calculated_at.getTime()) / (1000 * 60 * 60); // Saat cinsinden yaş
       
-      if (snapshotAge > 24) { // If snapshot is older than 24 hours
-        logger.info(`Uptime snapshot for ${validatorAddress} is outdated. Triggering a new calculation.`);
-        await this.calculateAndUpdateUptime(validatorAddress, BigInt(await this.aleoSDKService.getCurrentRound()));
-        return this.getValidatorUptime(validatorAddress); // Recursive call to get the fresh uptime
+      if (snapshotAge > 24) { // Snapshot 24 saatten eskiyse
+        logger.info(`${validatorAddress} için uptime snapshot eskimiş. Yeni bir hesaplama tetikleniyor.`);
+        await this.calculateAndUpdateUptime({ address: validatorAddress }, BigInt(await this.aleoSDKService.getCurrentRound()));
+        return this.getValidatorUptime(validatorAddress); // Taze uptime için tekrar çağır
       }
       
-      logger.info(`Uptime for validator ${validatorAddress}: ${latestUptimeSnapshot.uptime_percentage.toFixed(2)}%`);
-      return latestUptimeSnapshot.uptime_percentage;
+      const uptimePercentage = Number(latestUptimeSnapshot.uptime_percentage);
+      if (isNaN(uptimePercentage)) {
+        logger.warn(`Validatör ${validatorAddress} için geçersiz uptime yüzdesi: ${latestUptimeSnapshot.uptime_percentage}`);
+        return null;
+      }
+      
+      logger.debug(`Validatör ${validatorAddress} için uptime hesaplandı: ${uptimePercentage.toFixed(2)}%`);
+      return uptimePercentage;
     } catch (error) {
-      logger.error(`Error fetching uptime for validator ${validatorAddress}:`, error);
+      logger.error(`Validatör ${validatorAddress} için uptime alınırken hata oluştu:`, error);
       throw new Error(`Validatör uptime değeri alınırken bir hata oluştu: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
     }
   }
 
-  private async calculateAndUpdateUptime(validatorAddress: string, currentRound: bigint): Promise<void> {
+  private async calculateAndUpdateUptime(validator: { address: string }, currentRound: bigint): Promise<void> {
     try {
-      const startRound = await this.determineStartRound(validatorAddress, currentRound);
+      const startRound = await this.determineStartRound(validator.address, currentRound);
 
       if (startRound >= currentRound) {
-        logger.debug(`Validator ${validatorAddress}: startRound (${startRound}) >= currentRound (${currentRound}). Skipping.`);
+        logger.debug(`Validator ${validator.address}: startRound (${startRound}) >= currentRound (${currentRound}). Skipping.`);
         return;
       }
 
-      logger.debug(`Calculating uptime for validator ${validatorAddress} from round ${startRound} to ${currentRound}`);
+      logger.debug(`Calculating uptime for validator ${validator.address} from round ${startRound} to ${currentRound}`);
 
       const [totalCommitteesList, validatorBatchParticipation, validatorSignatureParticipation] = await Promise.all([
         this.snarkOSDBService.getTotalCommittees(startRound, currentRound),
-        this.snarkOSDBService.getValidatorParticipation(validatorAddress, startRound, currentRound),
-        this.snarkOSDBService.getSignatureParticipation(validatorAddress, startRound, currentRound)
+        this.snarkOSDBService.getValidatorParticipation(validator.address, startRound, currentRound),
+        this.snarkOSDBService.getSignatureParticipation(validator.address, startRound, currentRound)
       ]);
 
       const uptimeData = this.processUptimeData(totalCommitteesList, validatorBatchParticipation, validatorSignatureParticipation);
 
-      await this.updateUptimeInDatabase(validatorAddress, startRound, currentRound, uptimeData);
+      await this.updateUptimeInDatabase(validator.address, startRound, currentRound, uptimeData);
 
-      logger.info(`Uptime calculated for validator ${validatorAddress}: ${uptimeData.uptimePercentage.toFixed(2)}%`);
+      logger.info(`Uptime calculated for validator ${validator.address}: ${uptimeData.uptimePercentage.toFixed(2)}%`);
     } catch (error) {
-      logger.error(`Error calculating uptime for validator ${validatorAddress}:`, error);
+      logger.error(`Error calculating uptime for validator ${validator.address}:`, error);
       throw error;
     }
   }
 
   private async determineStartRound(validatorAddress: string, currentRound: bigint): Promise<bigint> {
-    const calculationRoundSpan = BigInt(this.CALCULATION_ROUND_SPAN);
-    const startRoundCandidate = currentRound > calculationRoundSpan ? currentRound - calculationRoundSpan : BigInt(0);
-
-    const earliestRound = await this.snarkOSDBService.getEarliestValidatorRound(validatorAddress);
-    return earliestRound ? (earliestRound > startRoundCandidate ? earliestRound : startRoundCandidate) : startRoundCandidate;
+    try {
+      const earliestRound = await this.snarkOSDBService.getEarliestValidatorRound(validatorAddress);
+      const lastSnapshot = await this.snarkOSDBService.getLatestUptimeSnapshot(validatorAddress);
+      
+      if (lastSnapshot) {
+        return BigInt(lastSnapshot.end_round) + BigInt(1);
+      }
+      
+      return earliestRound > BigInt(0) ? earliestRound : currentRound - BigInt(this.CALCULATION_ROUND_SPAN);
+    } catch (error) {
+      logger.error(`Error determining start round for validator ${validatorAddress}:`, error);
+      throw error;
+    }
   }
 
   private processUptimeData(
@@ -346,23 +361,27 @@ export class PerformanceMetricsService {
 
       const performance = await this.validatorDBService.monitorValidatorPerformance(validatorAddress, timeFrame);
       const uptime = await this.getValidatorUptime(validatorAddress);
+      
+      if (performance.performanceScore === 0 && uptime !== null && uptime > 90) {
+        logger.warn(`Inconsistency detected for validator ${validatorAddress}: Performance score is 0 but uptime is ${uptime}%`);
+      }
 
-      const result = {
-        ...performance,
-        uptimePercentage: uptime,
+      const result = serializeBigInt({
+        committeeParticipations: performance.committeeParticipations,
+        totalSignatures: performance.totalSignatures,
+        totalBatchesProduced: performance.totalBatchesProduced,
+        totalRewards: performance.totalRewards,
+        performanceScore: Number(performance.performanceScore.toFixed(2)),
+        uptimePercentage: uptime !== null ? Number(uptime.toFixed(2)) : null,
         timeFrame: timeFrame
-      };
+      });
 
-      await this.cacheService.set(cacheKey, JSON.stringify(result), 5 * 60); // Cache for 5 minutes
+      await this.cacheService.set(cacheKey, JSON.stringify(result), 5 * 60);
 
       return result;
-    } catch (error: unknown) {
-      logger.error(`Error getting performance for validator ${validatorAddress}:`, error);
-      if (error instanceof Error) {
-        throw new Error(`Validatör performansı alınırken bir hata oluştu: ${error.message}`);
-      } else {
-        throw new Error(`Validatör performansı alınırken bilinmeyen bir hata oluştu.`);
-      }
+    } catch (error) {
+      logger.error(`Validator performansı alınırken bir hata oluştu (${validatorAddress}): ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
+      throw new Error(`Validator performansı alınırken bir hata oluştu: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
     }
   }
 

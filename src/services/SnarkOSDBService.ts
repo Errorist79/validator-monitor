@@ -64,8 +64,9 @@ export class SnarkOSDBService {
     return this.blockDBService.upsertBlocks(blocks, client);
   }
 
-  async getLatestBlockHeight(): Promise<number> {
-    return this.blockDBService.getLatestBlockHeight();
+  async getLatestBlockHeight(): Promise<bigint> {
+    const result = await this.blockDBService.getLatestBlockHeight();
+    return BigInt(result);
   }
 
   async bulkInsertBlocks(blocks: BlockAttributes[]): Promise<void> {
@@ -97,10 +98,16 @@ export class SnarkOSDBService {
 
   async monitorValidatorPerformance(address: string, timeWindow: number): Promise<{
     committeeParticipations: number,
-    signatureSuccesses: number,
-    totalRewards: bigint
+    totalSignatures: number,
+    totalBatchesProduced: number,
+    totalRewards: bigint,
+    performanceScore: number
   }> {
-    return this.validatorDBService.monitorValidatorPerformance(address, timeWindow);
+    const result = await this.validatorDBService.monitorValidatorPerformance(address, timeWindow);
+    return {
+      ...result,
+      totalRewards: BigInt(result.totalRewards)
+    };
   }
 
   async getLatestProcessedBlockHeight(): Promise<number> {
@@ -204,7 +211,7 @@ export class SnarkOSDBService {
     return this.validatorDBService.getActiveValidators();
   }
 
-  async getEarliestValidatorRound(validatorAddress: string): Promise<bigint | null> {
+  async getEarliestValidatorRound(validatorAddress: string): Promise<bigint> {
     return this.committeeDBService.getEarliestValidatorRound(validatorAddress);
   }
 
@@ -260,18 +267,6 @@ export class SnarkOSDBService {
     return this.committeeDBService.getValidatorSignatures(validatorAddress, startTime, endTime);
   }
 
-  async getDelegators(validatorAddress: string): Promise<any[]> {
-    return this.validatorDBService.getDelegators(validatorAddress);
-  }
-
-  async updateValidatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
-    return this.rewardsDBService.updateValidatorRewards(address, reward, blockHeight);
-  }
-
-  async updateDelegatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
-    return this.rewardsDBService.updateDelegatorRewards(address, reward, blockHeight);
-  }
-
   async updateBlockReward(blockHash: string, reward: bigint): Promise<void> {
     return this.rewardsDBService.updateBlockReward(blockHash, reward);
   }
@@ -282,5 +277,33 @@ export class SnarkOSDBService {
 
   async getDelegatorRewardsInRange(delegatorAddress: string, startBlock: number, endBlock: number): Promise<bigint> {
     return this.rewardsDBService.getDelegatorRewardsInRange(delegatorAddress, startBlock, endBlock);
+  }
+
+  async getTotalValidatorStake(address: string): Promise<bigint> {
+    return this.validatorDBService.getTotalValidatorStake(address);
+  }
+
+  async insertValidatorRewardHistory(address: string, reward: bigint, timestamp: number): Promise<void> {
+    return this.rewardsDBService.insertValidatorRewardHistory(address, reward, timestamp);
+  }
+
+  async getValidatorRewardsInTimeRange(address: string, startTime: number, endTime: number): Promise<Array<{amount: bigint, timestamp: number}>> {
+    return this.rewardsDBService.getValidatorRewardsInTimeRange(address, startTime, endTime);
+  }
+
+  async getValidatorInfo(address: string): Promise<{ totalStake: bigint; commissionRate: number }> {
+    return this.validatorDBService.getValidatorInfo(address);
+  }
+
+  async updateValidatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
+    return this.rewardsDBService.updateValidatorRewards(address, reward, blockHeight);
+  }
+
+  async getDelegators(validatorAddress: string): Promise<Array<{ address: string; amount: bigint }>> {
+    return this.validatorDBService.getDelegators(validatorAddress);
+  }
+
+  async updateDelegatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
+    return this.rewardsDBService.updateDelegatorRewards(address, reward, blockHeight);
   }
 }

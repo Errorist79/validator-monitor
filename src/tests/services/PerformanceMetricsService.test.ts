@@ -8,24 +8,46 @@ import { CacheService } from '../../services/CacheService.js';
 import { config } from '../../config/index.js';
 import { BaseDBService } from '../../services/database/BaseDBService.js';
 import { ValidatorDBService } from '../../services/database/ValidatorDBService.js';
+import { ValidatorService } from '../../services/ValidatorService.js';
+
 jest.mock('../../services/SnarkOSDBService');
 jest.mock('../../services/AleoSDKService');
 jest.mock('../../services/CacheService');
+jest.mock('../../services/ValidatorService');
+jest.mock('../../services/database/ValidatorDBService');
+
 describe('PerformanceMetricsService', () => {
   let performanceMetricsService: PerformanceMetricsService;
   let mockSnarkOSDBService: jest.Mocked<SnarkOSDBService>;
   let mockAleoSDKService: jest.Mocked<AleoSDKService>;
   let mockBlockSyncService: jest.Mocked<BlockSyncService>;
   let mockCacheService: jest.Mocked<CacheService>;
-  let validatorDBService: ValidatorDBService;
+  let mockValidatorDBService: jest.Mocked<ValidatorDBService>;
+  let mockValidatorService: jest.Mocked<ValidatorService>;
+
   beforeEach(() => {
     mockAleoSDKService = new AleoSDKService('https://api.explorer.provable.com/v1', 'testnet') as jest.Mocked<AleoSDKService>;
     mockSnarkOSDBService = new SnarkOSDBService() as jest.Mocked<SnarkOSDBService>;
     mockCacheService = new CacheService(config.redis.url) as jest.Mocked<CacheService>;
-    const mockBaseDBService = {} as BaseDBService; // Mock bir BaseDBService oluşturun
+    const mockBaseDBService = {} as BaseDBService;
     mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService, mockCacheService, mockBaseDBService) as jest.Mocked<BlockSyncService>;
-    validatorDBService = new ValidatorDBService(mockSnarkOSDBService, mockAleoSDKService, mockCacheService, mockBaseDBService);
-    performanceMetricsService = new PerformanceMetricsService(mockSnarkOSDBService, mockAleoSDKService, mockBlockSyncService, mockCacheService);
+    mockValidatorDBService = new ValidatorDBService() as jest.Mocked<ValidatorDBService>;
+    mockValidatorService = new ValidatorService(
+      mockAleoSDKService,
+      mockSnarkOSDBService,
+      mockValidatorDBService
+    ) as jest.Mocked<ValidatorService>;
+
+    performanceMetricsService = new PerformanceMetricsService(
+      mockSnarkOSDBService,
+      mockAleoSDKService,
+      mockBlockSyncService,
+      mockCacheService,
+      mockValidatorService,
+      mockValidatorDBService
+    );
+
+    mockValidatorService.setPerformanceMetricsService(performanceMetricsService);
   });
 
   describe('calculateUptime', () => {
@@ -65,10 +87,12 @@ describe('PerformanceMetricsService', () => {
         totalRewards: BigInt(100000),
         uptimePercentage: 96
       };
-      jest.spyOn(validatorDBService, 'monitorValidatorPerformance').mockResolvedValue({
+      jest.spyOn(mockValidatorDBService, 'monitorValidatorPerformance').mockResolvedValue({
         committeeParticipations: 50,
-        signatureSuccesses: 48,
-        totalRewards: BigInt(100000)
+        totalSignatures: 48,
+        totalBatchesProduced: 48,
+        totalRewards: '100000',
+        performanceScore: 96
       });
       jest.spyOn(performanceMetricsService, 'getValidatorUptime').mockResolvedValue(96);
 

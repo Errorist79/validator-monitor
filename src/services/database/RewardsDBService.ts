@@ -46,4 +46,26 @@ export class RewardsDBService extends BaseDBService {
     const result = await this.query(query, [delegatorAddress, startBlock, endBlock]);
     return BigInt(result.rows[0].total_rewards || 0);
   }
+
+  async insertValidatorRewardHistory(address: string, reward: bigint, timestamp: number): Promise<void> {
+    const query = `
+      INSERT INTO validator_reward_history (validator_address, reward, timestamp)
+      VALUES ($1, $2, $3)
+    `;
+    await this.query(query, [address, reward.toString(), timestamp]);
+  }
+
+  async getValidatorRewardsInTimeRange(address: string, startTime: number, endTime: number): Promise<Array<{amount: bigint, timestamp: number}>> {
+    const query = `
+      SELECT reward, timestamp
+      FROM validator_reward_history
+      WHERE validator_address = $1 AND timestamp BETWEEN $2 AND $3
+      ORDER BY timestamp ASC
+    `;
+    const result = await this.query(query, [address, startTime, endTime]);
+    return result.rows.map((row: { reward: string; timestamp: number }) => ({
+      amount: BigInt(row.reward),
+      timestamp: row.timestamp
+    }));
+  }
 }

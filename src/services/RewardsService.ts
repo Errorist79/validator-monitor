@@ -2,12 +2,24 @@ import { AleoSDKService } from './AleoSDKService.js';
 import { SnarkOSDBService } from './SnarkOSDBService.js';
 import { APIBlock } from '../database/models/Block.js';
 import logger from '../utils/logger.js';
+import { CronJob } from 'cron';
+
+interface ValidatorReward {
+  address: string;
+  timestamp: number;
+  amount: bigint;
+}
 
 export class RewardsService {
+  private rewardsHistory: Map<string, ValidatorReward[]> = new Map();
+
   constructor(
     private aleoSDKService: AleoSDKService,
     private snarkOSDBService: SnarkOSDBService
-  ) {}
+  ) {
+    // Her 15 dakikada bir ödülleri hesapla ve dağıt
+    new CronJob('*/15 * * * *', this.calculateAndDistributeRewards.bind(this), null, true);
+  }
 
   async calculateAndDistributeRewards(): Promise<void> {
     try {
@@ -54,18 +66,27 @@ export class RewardsService {
 
       for (const [address, [stake, isOpen, commission]] of Object.entries(committee.members)) {
         const memberStake = BigInt(stake);
-        const memberReward = (memberStake * BigInt(blockReward)) / totalStake;
-        
-        const commissionRate = BigInt(commission) / BigInt(100);
-        const commissionAmount = (memberReward * commissionRate) / BigInt(100);
-        const finalReward = memberReward - commissionAmount;
+        const totalValidatorStake = await this.snarkOSDBService.getTotalValidatorStake(address);
 
-        logger.debug(`Validator ${address}: Stake: ${memberStake}, Reward: ${finalReward}`);
+        if (totalValidatorStake < BigInt(10_000_000)) {
+          logger.warn(`Validator ${address} has less than 10 million credits. Skipping reward calculation.`);
+          continue;
+        }
 
-        await this.snarkOSDBService.updateValidatorRewards(address, finalReward, blockHeight);
+        const baseReward = (memberStake * BigInt(blockReward)) / totalStake;
+        const delegatedStake = totalValidatorStake - memberStake;
+        const commissionRate = BigInt(commission);
+        const commissionAmount = (delegatedStake * baseReward * commissionRate) / (totalValidatorStake * BigInt(100));
+        const validatorReward = ((memberStake * baseReward) / totalValidatorStake) + commissionAmount;
+        const delegatorReward = baseReward - validatorReward;
+
+        logger.debug(`Validator ${address}: Stake: ${memberStake}, Reward: ${validatorReward}`);
+
+        await this.updateRewardHistory(address, validatorReward, block.header.metadata.timestamp);
+        await this.snarkOSDBService.updateValidatorRewards(address, validatorReward, blockHeight);
         
         if (isOpen) {
-          await this.distributeDelegatorRewards(address, commissionAmount, blockHeight);
+          await this.distributeDelegatorRewards(address, delegatorReward, blockHeight);
         }
       }
 
@@ -104,8 +125,56 @@ export class RewardsService {
     }
   }
 
+  private async updateRewardHistory(address: string, reward: bigint, timestamp: number): Promise<void> {
+    if (!this.rewardsHistory.has(address)) {
+      this.rewardsHistory.set(address, []);
+    }
+    this.rewardsHistory.get(address)!.push({ address, timestamp, amount: reward });
+    await this.snarkOSDBService.insertValidatorRewardHistory(address, reward, timestamp);
+  }
+
   async getValidatorRewards(validatorAddress: string, startBlock: number, endBlock: number): Promise<bigint> {
     return this.snarkOSDBService.getValidatorRewardsInRange(validatorAddress, startBlock, endBlock);
+  }
+
+  async getValidatorPerformanceMetrics(validatorAddress: string, startTime: number, endTime: number): Promise<{
+    totalRewards: bigint;
+    averageReward: bigint;
+    rewardFrequency: number;
+  }> {
+    const rewards = await this.snarkOSDBService.getValidatorRewardsInTimeRange(validatorAddress, startTime, endTime);
+    const totalRewards = rewards.reduce((sum: bigint, reward: { amount: bigint }) => sum + reward.amount, BigInt(0));
+    const averageReward = rewards.length > 0 ? totalRewards / BigInt(rewards.length) : BigInt(0);
+    const timeInterval = (endTime - startTime) / (60 * 60 * 24); // Gün cinsinden zaman aralığı
+    const rewardFrequency = rewards.length / timeInterval;
+
+    return { totalRewards, averageReward, rewardFrequency };
+  }
+
+  async generateValidatorPerformanceReport(validatorAddress: string, startTime: number, endTime: number): Promise<{
+    address: string;
+    totalStake: bigint;
+    commissionRate: number;
+    totalReward: bigint;
+    averageDailyReward: bigint;
+    rewardFrequency: number;
+  }> {
+    const [validatorInfo, metrics] = await Promise.all([
+      this.snarkOSDBService.getValidatorInfo(validatorAddress),
+      this.getValidatorPerformanceMetrics(validatorAddress, startTime, endTime)
+    ]);
+
+    const days = (endTime - startTime) / (60 * 60 * 24);
+    const averageDailyReward = metrics.totalRewards / BigInt(days);
+
+    return {
+      address: validatorAddress,
+      totalStake: validatorInfo.totalStake,
+      commissionRate: validatorInfo.commissionRate,
+      totalReward: metrics.totalRewards,
+      averageDailyReward,
+      rewardFrequency: metrics.rewardFrequency
+    };
   }
 }
 

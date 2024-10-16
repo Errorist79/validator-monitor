@@ -9,9 +9,9 @@ import { PerformanceMetricsService } from './services/PerformanceMetricsService.
 import { AlertService } from './services/AlertService.js';
 import cron from 'node-cron';
 import { SnarkOSDBService } from './services/SnarkOSDBService.js';
+import { ValidatorDBService } from './services/database/ValidatorDBService.js';
 import { config } from './config/index.js';
 import AleoSDKService from './services/AleoSDKService.js';
-import { NotFoundError, ValidationError } from './utils/errors.js';
 import BlockSyncService from './services/BlockSyncService.js';
 import RewardsService from './services/RewardsService.js';
 import { CacheService } from './services/CacheService.js';
@@ -28,7 +28,7 @@ const cacheService = new CacheService(config.redis.url);
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
 const snarkOSDBService = new SnarkOSDBService();
 const baseDBService = new BaseDBService();
-
+const validatorDBService = new ValidatorDBService();
 let blockSyncService: BlockSyncService;
 let performanceMetricsService: PerformanceMetricsService;
 let validatorService: ValidatorService;
@@ -87,8 +87,9 @@ async function initialize() {
     logger.info('Database initialized and checked successfully');
 
     blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService, cacheService, baseDBService);
-    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService, cacheService);
-    validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, performanceMetricsService);
+    validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, validatorDBService);
+    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService, cacheService, validatorService, validatorDBService);
+    validatorService.setPerformanceMetricsService(performanceMetricsService);
     alertService = new AlertService(snarkOSDBService, performanceMetricsService);
     rewardsService = new RewardsService(aleoSDKService, snarkOSDBService);
 
@@ -107,7 +108,7 @@ async function initialize() {
 
 initialize();
 
-// Kaldırılan test rotaları:
+// test routes:
 // app.get('/api/test/latest-block', ...);
 // app.get('/api/test/latest-committee', ...);
 // app.get('/api/test/block/:height', ...);
@@ -116,12 +117,12 @@ initialize();
 // app.get('/api/test/latest-block-structure', ...);
 // app.get('/api/test/raw-latest-block', ...);
 
-// Kaldırılan veya taşınan diğer rotalar:
-// app.get('/api/validators', ...); // Taşındı
-// app.get('/api/consensus/round', ...); // Taşındı
-// app.get('/api/consensus/committee', ...); // Taşındı
-// app.get('/api/primary/transmissions', ...); // Taşındı
-// app.get('/api/alerts/:address', ...); // Eğer kullanılmıyorsa kaldırıldı
+// removed routes:
+// app.get('/api/validators', ...); // moved
+// app.get('/api/consensus/round', ...); // moved
+// app.get('/api/consensus/committee', ...); // moved
+// app.get('/api/primary/transmissions', ...); // moved 
+// app.get('/api/alerts/:address', ...); // removed
 
 app.get('/api/consensus/committee', async (req, res) => {
   try {
