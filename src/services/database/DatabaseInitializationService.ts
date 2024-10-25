@@ -8,19 +8,18 @@ export class DatabaseInitializationService extends BaseDBService {
     try {
       const tables = [
         'blocks', 'committee_members', 'committee_participation', 'batches',
-        'uptime_snapshots', 'validator_rewards', 'delegator_rewards',
-        'delegations', 'validator_status', 'signature_participation', 'validators',
-        'validator_reward_history'
+        'uptime_snapshots', 'rewards', 'delegations', 'validator_status',
+        'signature_participation', 'validators', 'metadata'
       ];
       const indexes = [
         'idx_blocks_round', 'idx_committee_participation_round',
         'idx_batches_round', 'idx_uptime_snapshots_end_round',
-        'idx_validator_rewards_address_height', 'idx_delegator_rewards_address_height',
-        'idx_delegations_validator_address', 'idx_validator_status_is_active',
-        'idx_signature_participation_validator', 'idx_signature_participation_round',
-        'idx_validators_address', 'idx_committee_participation_validator_timestamp',
-        'idx_signature_participation_validator_timestamp', 'idx_validator_rewards_validator_timestamp',
-        'idx_validator_reward_history_address_timestamp'
+        'idx_rewards_address_height', 'idx_delegations_validator_address',
+        'idx_validator_status_is_active', 'idx_signature_participation_validator',
+        'idx_signature_participation_round', 'idx_validators_address',
+        'idx_committee_participation_validator_timestamp',
+        'idx_signature_participation_validator_timestamp',
+        'idx_rewards_validator_timestamp'
       ];
 
       for (const table of tables) {
@@ -70,7 +69,7 @@ export class DatabaseInitializationService extends BaseDBService {
     try {
       await client.query('BEGIN');
 
-      const tables = ['blocks', 'committee_members', 'committee_participation', 'batches', 'uptime_snapshots', 'signature_participation', 'validator_rewards', 'delegator_rewards', 'delegations', 'validator_status', 'validators', 'validator_reward_history'];
+      const tables = ['blocks', 'committee_members', 'committee_participation', 'batches', 'uptime_snapshots', 'signature_participation', 'rewards', 'delegations', 'validator_status', 'validators', 'metadata'];
       for (const table of tables) {
         await this.checkAndUpdateTable(client, table);
       }
@@ -163,21 +162,14 @@ export class DatabaseInitializationService extends BaseDBService {
         uptime_percentage NUMERIC(5,2) NOT NULL,
         calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )`,
-      `CREATE TABLE IF NOT EXISTS validator_rewards (
+      `CREATE TABLE IF NOT EXISTS rewards (
         id SERIAL PRIMARY KEY,
-        validator_address TEXT NOT NULL,
+        address TEXT NOT NULL,
         reward NUMERIC NOT NULL,
         block_height BIGINT NOT NULL,
         timestamp BIGINT NOT NULL,
-        UNIQUE(validator_address, block_height)
-      )`,
-      `CREATE TABLE IF NOT EXISTS delegator_rewards (
-        id SERIAL PRIMARY KEY,
-        delegator_address TEXT NOT NULL,
-        reward NUMERIC NOT NULL,
-        block_height BIGINT NOT NULL,
-        timestamp BIGINT NOT NULL,
-        UNIQUE(delegator_address, block_height)
+        is_validator BOOLEAN NOT NULL,
+        UNIQUE(address, block_height)
       )`,
       `CREATE TABLE IF NOT EXISTS delegations (
         id SERIAL PRIMARY KEY,
@@ -204,11 +196,9 @@ export class DatabaseInitializationService extends BaseDBService {
         success BOOLEAN DEFAULT true,
         PRIMARY KEY (validator_address, batch_id, round)
       )`,
-      `CREATE TABLE IF NOT EXISTS validator_reward_history (
-        id SERIAL PRIMARY KEY,
-        validator_address TEXT NOT NULL,
-        reward BIGINT NOT NULL,
-        timestamp BIGINT NOT NULL
+      `CREATE TABLE IF NOT EXISTS metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       )`
     ];
 
@@ -228,8 +218,7 @@ export class DatabaseInitializationService extends BaseDBService {
       'CREATE INDEX IF NOT EXISTS idx_batches_author ON batches(author)',
       'CREATE INDEX IF NOT EXISTS idx_batches_author_committee_round ON batches(author, committee_id, round)',
       'CREATE INDEX IF NOT EXISTS idx_uptime_snapshots_end_round ON uptime_snapshots(end_round)',
-      'CREATE INDEX IF NOT EXISTS idx_validator_rewards_address_height ON validator_rewards(validator_address, block_height)',
-      'CREATE INDEX IF NOT EXISTS idx_delegator_rewards_address_height ON delegator_rewards(delegator_address, block_height)',
+      'CREATE INDEX IF NOT EXISTS idx_rewards_address_height ON rewards(address, block_height)',
       'CREATE INDEX IF NOT EXISTS idx_delegations_validator_address ON delegations(validator_address)',
       'CREATE INDEX IF NOT EXISTS idx_validator_status_is_active ON validator_status(is_active)',
       'CREATE INDEX IF NOT EXISTS idx_signature_participation_validator ON signature_participation(validator_address)',
@@ -237,8 +226,8 @@ export class DatabaseInitializationService extends BaseDBService {
       'CREATE INDEX IF NOT EXISTS idx_validators_address ON validators(address)',
       'CREATE INDEX IF NOT EXISTS idx_committee_participation_validator_timestamp ON committee_participation(validator_address, timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_signature_participation_validator_timestamp ON signature_participation(validator_address, timestamp, success)',
-      'CREATE INDEX IF NOT EXISTS idx_validator_rewards_validator_timestamp ON validator_rewards(validator_address, timestamp)',
-      'CREATE INDEX IF NOT EXISTS idx_validator_reward_history_address_timestamp ON validator_reward_history(validator_address, timestamp)'
+      'CREATE INDEX IF NOT EXISTS idx_rewards_validator_timestamp ON rewards(address, timestamp, is_validator)',
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_rewards_address_block_height ON rewards(address, block_height)'
     ];
 
     for (const query of createIndexQueries) {
@@ -270,8 +259,8 @@ export class DatabaseInitializationService extends BaseDBService {
     }
   }
 
-  private getExpectedColumns(table: string): { [key: string]: string } {
-    switch (table) {
+  private getExpectedColumns(tableName: string): { [columnName: string]: string } {
+    switch (tableName) {
       case 'blocks':
         return {
           height: 'BIGINT PRIMARY KEY',
@@ -323,21 +312,14 @@ export class DatabaseInitializationService extends BaseDBService {
           uptime_percentage: 'NUMERIC(5,2) NOT NULL',
           calculated_at: 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
         };
-      case 'validator_rewards':
+      case 'rewards':
         return {
           id: 'INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY',
-          validator_address: 'TEXT NOT NULL',
+          address: 'TEXT NOT NULL',
           reward: 'NUMERIC NOT NULL',
+          block_height: 'BIGINT NOT NULL',
           timestamp: 'BIGINT NOT NULL',
-          block_height: 'BIGINT NOT NULL'
-        };
-      case 'delegator_rewards':
-        return {
-          id: 'INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY',
-          delegator_address: 'TEXT NOT NULL',
-          reward: 'NUMERIC NOT NULL',
-          timestamp: 'BIGINT NOT NULL',
-          block_height: 'BIGINT NOT NULL'
+          is_validator: 'BOOLEAN NOT NULL'
         };
       case 'delegations':
         return {
@@ -373,12 +355,10 @@ export class DatabaseInitializationService extends BaseDBService {
           total_rewards: 'NUMERIC DEFAULT 0',
           last_seen: 'TIMESTAMP WITH TIME ZONE DEFAULT NOW()'
         };
-      case 'validator_reward_history':
+      case 'metadata':
         return {
-          id: 'INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY',
-          validator_address: 'TEXT NOT NULL',
-          reward: 'BIGINT NOT NULL',
-          timestamp: 'BIGINT NOT NULL'
+          key: 'TEXT PRIMARY KEY',
+          value: 'TEXT NOT NULL'
         };
       default:
         return {};

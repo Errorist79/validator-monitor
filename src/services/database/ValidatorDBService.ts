@@ -1,13 +1,17 @@
 import { BaseDBService } from './BaseDBService.js';
 import logger from '../../utils/logger.js';
 import { serializeBigInt } from '../../utils/bigIntSerializer.js';
-
-interface Block {
-  total_fees: string;
-  timestamp: Date;
-}
+import { RewardsService } from '../RewardsService.js';
+import { SnarkOSDBService } from '../SnarkOSDBService.js';
 
 export class ValidatorDBService extends BaseDBService {
+  constructor(
+    private rewardsService: RewardsService,
+    private snarkOSDBService: SnarkOSDBService
+  ) {
+    super();
+  }
+
   async getValidators(): Promise<any[]> {
     const query = 'SELECT * FROM committee_members';
     const result = await this.query(query);
@@ -114,10 +118,13 @@ export class ValidatorDBService extends BaseDBService {
   }> {
     logger.debug(`Querying performance for ${address} from ${startTime} to ${endTime}`);
     
+    // Ödül hesaplama işlemini çağır
+    await this.calculateRewardsForTimeRange(address, startTime, endTime);
+    
     const query = `
-      WITH committee_count AS (
-        SELECT COUNT(*) as participations
-        FROM committee_participation
+      WITH committee_participations AS (
+        SELECT COUNT(DISTINCT committee_id) as participations
+        FROM signature_participation
         WHERE validator_address = $1 AND timestamp >= $2 AND timestamp <= $3
       ), signature_count AS (
         SELECT COUNT(*) as total_signatures
@@ -128,15 +135,17 @@ export class ValidatorDBService extends BaseDBService {
         FROM batches
         WHERE author = $1 AND timestamp >= $2 AND timestamp <= $3
       ), rewards_sum AS (
-        SELECT COALESCE(SUM(CAST(reward AS NUMERIC)), 0) as total_rewards
-        FROM validator_rewards
-        WHERE validator_address = $1 AND timestamp >= $2 AND timestamp <= $3
+        SELECT COALESCE(SUM(r.reward::numeric), 0) as total_rewards
+        FROM rewards r
+        JOIN blocks b ON r.block_height = b.height
+        WHERE r.address = $1 AND b.timestamp BETWEEN $2 AND $3 AND r.is_validator = true
       )
       SELECT 
-        (SELECT participations FROM committee_count) as committee_participations,
-        (SELECT total_signatures FROM signature_count) as total_signatures,
-        (SELECT total_batches FROM batch_count) as total_batches_produced,
-        (SELECT total_rewards FROM rewards_sum) as total_rewards
+        committee_participations.participations as committee_participations,
+        signature_count.total_signatures as total_signatures,
+        batch_count.total_batches as total_batches_produced,
+        rewards_sum.total_rewards as total_rewards
+      FROM committee_participations, signature_count, batch_count, rewards_sum
     `;
 
     try {
@@ -153,6 +162,19 @@ export class ValidatorDBService extends BaseDBService {
       logger.error(`Error in queryPerformance for ${address}: ${error instanceof Error ? error.message : 'Unknown error'}`);
       logger.debug(`Query parameters: address=${address}, startTime=${startTime}, endTime=${endTime}`);
       throw error;
+    }
+  }
+
+  private async calculateRewardsForTimeRange(address: string, startTime: number, endTime: number): Promise<void> {
+    logger.debug(`Calculating rewards for ${address} from ${startTime} to ${endTime}`);
+    
+    try {
+      await this.rewardsService.calculateRewardsForTimeRange(address, startTime, endTime);
+      
+      logger.debug(`Rewards calculation completed for ${address}`);
+    } catch (error) {
+      logger.error(`Error calculating rewards for ${address}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      // Hata fırlatmak yerine sadece log'luyoruz, böylece performans sorgusu devam edebilir
     }
   }
 
@@ -238,9 +260,19 @@ export class ValidatorDBService extends BaseDBService {
   }
 
   async getTotalValidatorStake(address: string): Promise<bigint> {
-    const query = 'SELECT stake FROM validators WHERE address = $1';
-    const result = await this.query(query, [address]);
-    return result.rows.length > 0 ? BigInt(result.rows[0].stake) : BigInt(0);
+    try {
+      const query = 'SELECT total_stake FROM committee_members WHERE address = $1';
+      const result = await this.query(query, [address]);
+      if (result.rows.length > 0 && result.rows[0].total_stake !== null) {
+        return BigInt(result.rows[0].total_stake);
+      } else {
+        logger.warn(`No stake found for validator ${address}`);
+        return BigInt(0);
+      }
+    } catch (error) {
+      logger.error(`Error getting total stake for validator ${address}:`, error);
+      throw error;
+    }
   }
 
   async getValidatorInfo(address: string): Promise<{ totalStake: bigint; commissionRate: number }> {
@@ -264,13 +296,7 @@ export class ValidatorDBService extends BaseDBService {
     }));
   }
 
-  async monitorValidatorPerformance(address: string, timeWindow: number): Promise<{
-    committeeParticipations: number,
-    totalSignatures: number,
-    totalBatchesProduced: number,
-    totalRewards: string,
-    performanceScore: number
-  }> {
+  async monitorValidatorPerformance(address: string, timeWindow: number): Promise<any> {
     const endTime = Math.floor(Date.now() / 1000);
     let startTime = endTime - timeWindow;
     
@@ -284,12 +310,15 @@ export class ValidatorDBService extends BaseDBService {
       result = await this.queryPerformance(address, extendedStartTime, endTime);
     }
 
+    const totalRewards = await this.rewardsService.calculateRewardsForTimeRange(address, startTime, endTime);
+
     const signatureRate = result.committeeParticipations > 0 ? result.totalSignatures / result.committeeParticipations : 0;
     const batchRate = result.committeeParticipations > 0 ? result.totalBatchesProduced / result.committeeParticipations : 0;
     const performanceScore = Math.min(((signatureRate + batchRate) / 2) * 100, 100);
 
     return serializeBigInt({
       ...result,
+      totalRewards,
       performanceScore: Number(performanceScore.toFixed(2))
     });
   }

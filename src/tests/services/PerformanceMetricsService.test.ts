@@ -9,6 +9,7 @@ import { config } from '../../config/index.js';
 import { BaseDBService } from '../../services/database/BaseDBService.js';
 import { ValidatorDBService } from '../../services/database/ValidatorDBService.js';
 import { ValidatorService } from '../../services/ValidatorService.js';
+import { RewardsService } from '../../services/RewardsService';
 
 jest.mock('../../services/SnarkOSDBService');
 jest.mock('../../services/AleoSDKService');
@@ -27,11 +28,12 @@ describe('PerformanceMetricsService', () => {
 
   beforeEach(() => {
     mockAleoSDKService = new AleoSDKService('https://api.explorer.provable.com/v1', 'testnet') as jest.Mocked<AleoSDKService>;
-    mockSnarkOSDBService = new SnarkOSDBService() as jest.Mocked<SnarkOSDBService>;
+    const mockRewardsService = {} as RewardsService;
+    const mockSnarkOSDBService = {} as SnarkOSDBService;
+    mockValidatorDBService = new ValidatorDBService(mockRewardsService, mockSnarkOSDBService) as jest.Mocked<ValidatorDBService>;
     mockCacheService = new CacheService(config.redis.url) as jest.Mocked<CacheService>;
     const mockBaseDBService = {} as BaseDBService;
     mockBlockSyncService = new BlockSyncService(mockAleoSDKService, mockSnarkOSDBService, mockCacheService, mockBaseDBService) as jest.Mocked<BlockSyncService>;
-    mockValidatorDBService = new ValidatorDBService() as jest.Mocked<ValidatorDBService>;
     mockValidatorService = new ValidatorService(
       mockAleoSDKService,
       mockSnarkOSDBService,
@@ -44,7 +46,8 @@ describe('PerformanceMetricsService', () => {
       mockBlockSyncService,
       mockCacheService,
       mockValidatorService,
-      mockValidatorDBService
+      mockValidatorDBService,
+      mockRewardsService
     );
 
     mockValidatorService.setPerformanceMetricsService(performanceMetricsService);
@@ -62,10 +65,7 @@ describe('PerformanceMetricsService', () => {
         Batch.build({ batch_id: 'batch3', author: 'testAddress', round: 2, timestamp: 2100, committee_id: 'committee1', block_height: 2 }),
       ];
 
-      mockSnarkOSDBService.getCommitteeEntriesForValidator.mockResolvedValue(mockCommitteeEntries);
-      mockSnarkOSDBService.getValidatorBatches.mockResolvedValue(mockBatches);
-      mockSnarkOSDBService.getCommitteeSizeForRound.mockResolvedValue({ committee_size: 10 });
-
+      
       const startHeight = 1;
       const endHeight = 2;
       const result = await performanceMetricsService.updateUptimes();

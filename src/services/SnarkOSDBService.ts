@@ -9,6 +9,9 @@ import logger from '../utils/logger.js';
 import { BlockAttributes } from '../database/models/Block.js';
 import { UptimeSnapshotAttributes } from '../database/models/UptimeSnapshot.js';
 import { PoolClient } from 'pg';
+import RewardsService from './RewardsService.js';
+import AleoSDKService from './AleoSDKService.js';
+import { config } from '../config/index.js';
 
 export class SnarkOSDBService {
   private blockDBService: BlockDBService;
@@ -17,12 +20,16 @@ export class SnarkOSDBService {
   private committeeDBService: CommitteeDBService;
   private mappingDBService: MappingDBService;
   private uptimeDBService: UptimeDBService;
+  private aleoSDKService: AleoSDKService;
   private databaseInitializationService: DatabaseInitializationService;
+  private rewardsService: RewardsService;
 
   constructor() {
     this.blockDBService = new BlockDBService();
-    this.validatorDBService = new ValidatorDBService();
+    this.aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
     this.rewardsDBService = new RewardsDBService();
+    this.rewardsService = new RewardsService(this, this.rewardsDBService);
+    this.validatorDBService = new ValidatorDBService(this.rewardsService, this);
     this.committeeDBService = new CommitteeDBService();
     this.mappingDBService = new MappingDBService();
     this.uptimeDBService = new UptimeDBService();
@@ -76,6 +83,11 @@ export class SnarkOSDBService {
   async insertTransaction(transaction: any): Promise<void> {
     return this.blockDBService.insertTransaction(transaction);
   }
+
+  async getEarliestBlockHeight(): Promise<number> {
+    return this.blockDBService.getEarliestBlockHeight();
+  }
+  
   async insertValidator(address: string, stake: bigint, isOpen: boolean, commission: bigint): Promise<void> {
     return this.validatorDBService.insertValidator(address, stake, isOpen, commission);
   }
@@ -91,7 +103,7 @@ export class SnarkOSDBService {
   async insertCommitteeEntry(validatorAddress: string, startHeight: number, endHeight?: number): Promise<void> {
     return this.committeeDBService.insertCommitteeEntry(validatorAddress, startHeight, endHeight);
   }
-
+  
   async insertOrUpdateValidator(address: string, stake: bigint): Promise<void> {
     return this.validatorDBService.insertOrUpdateValidator(address, stake);
   }
@@ -134,6 +146,15 @@ export class SnarkOSDBService {
     return this.blockDBService.getBlockCountBetween(startHeight, endHeight);
   } */
 
+
+  async getBlockByHeight(height: number): Promise<BlockAttributes | null> {
+    return this.blockDBService.getBlockByHeight(height);
+  }
+
+  async getBlocksInTimeRange(startTime: number, endTime: number): Promise<Array<{ height: number, timestamp: number }>> {
+    return this.blockDBService.getBlocksInTimeRange(startTime, endTime);
+  }
+
   async getLatestBlocks(limit: number = 100): Promise<any[]> {
     return this.blockDBService.getLatestBlocks(limit);
   } 
@@ -144,6 +165,14 @@ export class SnarkOSDBService {
 
   async getValidatorBlockCountInHeightRange(validatorAddress: string, startHeight: number, endHeight: number): Promise<number> {
     return this.blockDBService.getValidatorBlockCountInHeightRange(validatorAddress, startHeight, endHeight);
+  }
+  async getBlockReward(blockHeight: number): Promise<bigint | null> {
+    try {
+      return await this.blockDBService.getBlockReward(blockHeight);
+    } catch (error) {
+      logger.error(`SnarkOSDBService getBlockReward hatası: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
+      throw error;
+    }
   }
 
   async updateValidatorUptime(
@@ -193,6 +222,10 @@ export class SnarkOSDBService {
 
   async deactivateValidator(address: string): Promise<void> {
     return this.validatorDBService.deactivateValidator(address);
+  }
+
+  async getCommitteeForBlock(blockHeight: number): Promise<{ members: { [address: string]: [number, boolean, number] } } | null> {
+    return this.committeeDBService.getCommitteeForBlock(blockHeight);
   }
 
   async getCommitteeSizeForRound(round: bigint): Promise<{ committee_size: number }> {
@@ -267,7 +300,7 @@ export class SnarkOSDBService {
     return this.committeeDBService.getValidatorSignatures(validatorAddress, startTime, endTime);
   }
 
-  async updateBlockReward(blockHash: string, reward: bigint): Promise<void> {
+/*   async updateBlockReward(blockHash: string, reward: bigint): Promise<void> {
     return this.rewardsDBService.updateBlockReward(blockHash, reward);
   }
   
@@ -277,33 +310,39 @@ export class SnarkOSDBService {
 
   async getDelegatorRewardsInRange(delegatorAddress: string, startBlock: number, endBlock: number): Promise<bigint> {
     return this.rewardsDBService.getDelegatorRewardsInRange(delegatorAddress, startBlock, endBlock);
-  }
+  } */
 
   async getTotalValidatorStake(address: string): Promise<bigint> {
     return this.validatorDBService.getTotalValidatorStake(address);
   }
 
-  async insertValidatorRewardHistory(address: string, reward: bigint, timestamp: number): Promise<void> {
+  /* async insertValidatorRewardHistory(address: string, reward: bigint, timestamp: number): Promise<void> {
+    logger.debug(`Inserting validator reward history: address=${address}, reward=${reward}, timestamp=${timestamp}`);
     return this.rewardsDBService.insertValidatorRewardHistory(address, reward, timestamp);
   }
 
-  async getValidatorRewardsInTimeRange(address: string, startTime: number, endTime: number): Promise<Array<{amount: bigint, timestamp: number}>> {
+   async getValidatorRewardsInTimeRange(address: string, startTime: number, endTime: number): Promise<Array<{amount: bigint, timestamp: number}>> {
     return this.rewardsDBService.getValidatorRewardsInTimeRange(address, startTime, endTime);
-  }
+  } */
 
   async getValidatorInfo(address: string): Promise<{ totalStake: bigint; commissionRate: number }> {
     return this.validatorDBService.getValidatorInfo(address);
   }
 
-  async updateValidatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
+ /*  async updateValidatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
+    logger.debug(`Updating validator rewards: address=${address}, reward=${reward}, blockHeight=${blockHeight}`);
     return this.rewardsDBService.updateValidatorRewards(address, reward, blockHeight);
-  }
+  } */
 
   async getDelegators(validatorAddress: string): Promise<Array<{ address: string; amount: bigint }>> {
     return this.validatorDBService.getDelegators(validatorAddress);
   }
 
-  async updateDelegatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
+  /* async updateDelegatorRewards(address: string, reward: bigint, blockHeight: bigint): Promise<void> {
     return this.rewardsDBService.updateDelegatorRewards(address, reward, blockHeight);
+  } */
+
+  async getBlockHeightByTimestamp(timestamp: number): Promise<number> {
+    return this.blockDBService.getBlockHeightByTimestamp(timestamp);
   }
 }

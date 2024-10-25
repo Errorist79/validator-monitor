@@ -16,7 +16,7 @@ import BlockSyncService from './services/BlockSyncService.js';
 import RewardsService from './services/RewardsService.js';
 import { CacheService } from './services/CacheService.js';
 import { BaseDBService } from './services/database/BaseDBService.js';
-
+import { RewardsDBService } from './services/database/RewardsDBService.js';
 const app = express();
 let port = process.env.PORT ? parseInt(process.env.PORT) : 4000;
 
@@ -28,12 +28,13 @@ const cacheService = new CacheService(config.redis.url);
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
 const snarkOSDBService = new SnarkOSDBService();
 const baseDBService = new BaseDBService();
-const validatorDBService = new ValidatorDBService();
+const rewardsDBService = new RewardsDBService();
+const rewardsService = new RewardsService(snarkOSDBService, rewardsDBService);
+const validatorDBService = new ValidatorDBService(rewardsService, snarkOSDBService);
 let blockSyncService: BlockSyncService;
 let performanceMetricsService: PerformanceMetricsService;
 let validatorService: ValidatorService;
 let alertService: AlertService;
-let rewardsService: RewardsService;
 
 const consensusService = new ConsensusService(aleoSDKService);
 const primaryService = new PrimaryService(aleoSDKService);
@@ -88,10 +89,9 @@ async function initialize() {
 
     blockSyncService = new BlockSyncService(aleoSDKService, snarkOSDBService, cacheService, baseDBService);
     validatorService = new ValidatorService(aleoSDKService, snarkOSDBService, validatorDBService);
-    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService, cacheService, validatorService, validatorDBService);
+    performanceMetricsService = new PerformanceMetricsService(snarkOSDBService, aleoSDKService, blockSyncService, cacheService, validatorService, validatorDBService, rewardsService);
     validatorService.setPerformanceMetricsService(performanceMetricsService);
     alertService = new AlertService(snarkOSDBService, performanceMetricsService);
-    rewardsService = new RewardsService(aleoSDKService, snarkOSDBService);
 
     app.use(express.json());
     app.use('/api', api(validatorService, blockSyncService, performanceMetricsService, alertService, rewardsService, aleoSDKService, consensusService, primaryService));
@@ -150,3 +150,4 @@ cron.schedule('*/5 * * * *', async () => {
     logger.error('Error updating validator statuses:', error);
   }
 });
+

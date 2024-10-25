@@ -34,5 +34,8 @@ const config = {
     sync: {
         startBlock: parseInt(process.env.SYNC_START_BLOCK || '0', 10), // veya başka bir başlangıç blok yüksekliği
     },
+    rewards: {
+        calculationInterval: parseInt(process.env.REWARDS_CALCULATION_INTERVAL || '60000', 10), // Her dakika (milisaniye cinsinden)
+    },
 };
 export { config };

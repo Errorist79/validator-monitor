@@ -61,6 +61,27 @@ export class BlockDBService extends BaseDBService {
     const result = await this.query(query, [validatorAddress, timeFrame]);
     return result.rows;
   }
+  
+  async getBlocksInTimeRange(startTime: number, endTime: number): Promise<Array<{ height: number, timestamp: number }>> {
+    const query = `
+      SELECT height, timestamp
+      FROM blocks
+      WHERE timestamp >= $1 AND timestamp <= $2
+      ORDER BY height ASC
+    `;
+    
+    try {
+      const result = await this.query(query, [startTime, endTime]);
+      logger.debug(`Retrieved ${result.rows.length} blocks from ${startTime} to ${endTime}`);
+      return result.rows.map(row => ({
+        height: parseInt(row.height),
+        timestamp: parseInt(row.timestamp)
+      }));
+    } catch (error) {
+      logger.error(`Error retrieving blocks in time range: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw error;
+    }
+  }
 
   async getLatestProcessedBlockHeight(): Promise<number> {
     const result = await this.query('SELECT MAX(height) as max_height FROM blocks');
@@ -260,6 +281,91 @@ export class BlockDBService extends BaseDBService {
       await client.query(query);
     } else {
       await this.query(query);
+    }
+  }
+  async getEarliestBlockHeight(): Promise<number> {
+    try {
+      const query = `
+        SELECT MIN(height) as min_height
+        FROM blocks
+      `;
+      const result = await this.query(query);
+      
+      if (result.rows.length === 0 || result.rows[0].min_height === null) {
+        logger.warn('Veritabanında hiç blok bulunamadı');
+        return 0;
+      }
+      
+      return result.rows[0].min_height;
+    } catch (error) {
+      logger.error(`En erken blok yüksekliği alınırken hata oluştu: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
+      throw error;
+    }
+  }
+
+  async getBlockHeightByTimestamp(timestamp: number): Promise<number> {
+    try {
+      const query = `
+        SELECT height 
+        FROM blocks 
+        WHERE timestamp <= $1 
+        ORDER BY timestamp DESC 
+        LIMIT 1
+      `;
+      const result = await this.query(query, [timestamp]);
+      
+      if (result.rows.length === 0) {
+        logger.warn(`No block found for timestamp ${timestamp}`);
+        return 0;
+      }
+      
+      return result.rows[0].height;
+    } catch (error) {
+      logger.error(`getBlockHeightByTimestamp için hata oluştu: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
+      throw error;
+    }
+  }
+
+  async getBlockByHeight(height: number): Promise<BlockAttributes | null> {
+    try {
+      const query = `
+        SELECT *
+        FROM blocks
+        WHERE height = $1
+      `;
+      const result = await this.query(query, [height]);
+      
+      if (result.rows.length === 0) {
+        logger.warn(`Yükseklik ${height} için blok bulunamadı`);
+        return null;
+      }
+      
+      const block = result.rows[0];
+      return {
+        ...block,
+        block_reward: block.block_reward ? BigInt(block.block_reward) : undefined
+      };
+    } catch (error) {
+      logger.error(`${height} yüksekliğindeki blok alınırken hata oluştu: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
+      throw error;
+    }
+  }
+
+  async getBlockReward(blockHeight: number): Promise<bigint | null> {
+    try {
+      const query = 'SELECT block_reward FROM blocks WHERE height = $1';
+      const result = await this.query(query, [blockHeight]);
+      
+      if (result.rows.length === 0) {
+        logger.warn(`No block found for height ${blockHeight}`);
+        return null;
+      }
+      
+      const blockReward = result.rows[0].block_reward;
+      return blockReward ? BigInt(blockReward) : null;
+    } catch (error) {
+      logger.error(`Error getting block reward for height ${blockHeight}:`, error);
+      throw error;
     }
   }
 }

@@ -264,4 +264,29 @@ export class CommitteeDBService extends BaseDBService {
     const result = await this.query(query, [validatorAddress, startTime, endTime]);
     return result.rows;
   }
+
+  async getCommitteeForBlock(blockHeight: number): Promise<{ members: { [address: string]: [number, boolean, number] } } | null> {
+    const query = `
+      SELECT cm.address, cm.total_stake, cm.is_open, cm.commission
+      FROM committee_members cm
+      JOIN committee_participation cp ON cm.address = cp.validator_address
+      WHERE cp.block_height = $1
+    `;
+    try {
+      const result = await this.query(query, [blockHeight]);
+      if (result.rows.length === 0) {
+        logger.warn(`No committee information found for block ${blockHeight}`);
+        return null;
+      }
+
+      const members: { [address: string]: [number, boolean, number] } = {};
+      for (const row of result.rows) {
+        members[row.address] = [Number(row.total_stake), row.is_open, Number(row.commission)];
+      }
+      return { members };
+    } catch (error) {
+      logger.error(`Error retrieving committee information for block height ${blockHeight}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      throw error;
+    }
+  }
 }

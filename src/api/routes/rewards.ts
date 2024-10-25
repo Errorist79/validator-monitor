@@ -4,11 +4,12 @@ import { SnarkOSDBService } from '../../services/SnarkOSDBService.js';
 import { AleoSDKService } from '../../services/AleoSDKService.js';
 import logger from '../../utils/logger.js';
 import { config } from '../../config/index.js';
-
+import { RewardsDBService } from '../../services/database/RewardsDBService.js';
 const router = express.Router();
 const snarkOSDBService = new SnarkOSDBService();
 const aleoSDKService = new AleoSDKService(config.aleo.sdkUrl, config.aleo.networkType as 'mainnet' | 'testnet');
-const rewardsService = new RewardsService(aleoSDKService, snarkOSDBService);
+const rewardsDBService = new RewardsDBService();
+const rewardsService = new RewardsService(snarkOSDBService, rewardsDBService);
 
 // Validator ödüllerini getir
 router.get('/validator/:address', async (req, res) => {

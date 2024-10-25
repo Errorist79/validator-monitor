@@ -11,6 +11,7 @@ import { CommitteeData } from '../database/models/CommitteeParticipation.js';
 import { ValidatorDBService } from './database/ValidatorDBService.js';
 import { ValidatorService } from './ValidatorService.js';
 import { serializeBigInt } from '../utils/bigIntSerializer.js';
+import { RewardsService } from './RewardsService.js';
 
 
 export class PerformanceMetricsService {
@@ -27,7 +28,8 @@ export class PerformanceMetricsService {
     private blockSyncService: BlockSyncService,
     private cacheService: CacheService,
     private validatorService: ValidatorService,
-    private validatorDBService: ValidatorDBService
+    private validatorDBService: ValidatorDBService,
+    private rewardsService: RewardsService // Burada rewardsService'i ekliyoruz
   ) {
     this.validatorService.setPerformanceMetricsService(this);
     this.SYNC_START_BLOCK = config.sync.startBlock;
@@ -36,6 +38,7 @@ export class PerformanceMetricsService {
     this.CONCURRENCY_LIMIT = config.performance.concurrencyLimit;
     this.setupEventListeners();
     this.startPeriodicUptimeCalculation();
+    this.startRewardCalculation();
   }
 
   private setupEventListeners(): void {
@@ -389,6 +392,17 @@ export class PerformanceMetricsService {
   // async getValidatorPerformanceSummary(validatorAddress: string, timeFrame: number): Promise<PerformanceSummary> {
   //   // Implementation goes here
   // }
+
+  private startRewardCalculation(): void {
+    setInterval(async () => {
+      try {
+        const latestBlockHeight = await this.snarkOSDBService.getLatestBlockHeight();
+        await this.rewardsService.calculateAndDistributeRewards(Number(latestBlockHeight));
+      } catch (error) {
+        logger.error('Error during reward calculation:', error);
+      }
+    }, config.rewards.calculationInterval);
+  }
 }
 
 export default PerformanceMetricsService;
