@@ -37,7 +37,7 @@ export class RewardsDBService extends BaseDBService {
 
   async getRewardsInTimeRange(address: string, startTime: number, endTime: number, isValidator: boolean): Promise<Array<{amount: bigint, timestamp: number}>> {
     const query = `
-      SELECT r.reward, r.timestamp, r.block_height
+      SELECT r.reward, r.timestamp
       FROM rewards r
       WHERE r.address = $1 
       AND r.timestamp BETWEEN $2 AND $3 
@@ -46,15 +46,24 @@ export class RewardsDBService extends BaseDBService {
     `;
     
     try {
-      const result = await this.query(query, [address, startTime, endTime, isValidator]);
-      logger.debug(`Query params: address=${address}, startTime=${startTime}, endTime=${endTime}, isValidator=${isValidator}`);
-      logger.debug(`Found ${result.rows.length} reward records`);
-      logger.debug(`First record: ${JSON.stringify(result.rows[0])}`);
+      logger.debug(`Querying rewards with params: address=${address}, startTime=${startTime}, endTime=${endTime}, isValidator=${isValidator}`);
       
-      return result.rows.map((row: { reward: string; timestamp: number }) => ({
-        amount: BigInt(row.reward),
-        timestamp: row.timestamp
-      }));
+      const result = await this.query(query, [address, startTime, endTime, isValidator]);
+      
+      logger.debug(`Found ${result.rows.length} reward records`);
+      
+      // BigInt serileştirme hatasını önlemek için toString() kullanıyoruz
+      if (result.rows.length > 0) {
+        logger.debug(`Sample reward record: reward=${result.rows[0].reward}, timestamp=${result.rows[0].timestamp}`);
+      }
+      
+      return result.rows.map((row: { reward: string; timestamp: number }) => {
+        const amount = BigInt(row.reward || '0');
+        return {
+          amount,
+          timestamp: row.timestamp
+        };
+      });
     } catch (error) {
       logger.error('Error getting rewards in time range:', error);
       throw error;

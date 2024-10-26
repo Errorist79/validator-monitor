@@ -300,18 +300,20 @@ export class ValidatorDBService extends BaseDBService {
     const startTime = endTime - timeWindow;
     
     try {
-      logger.debug(`Monitoring performance for validator ${address} from ${startTime} to ${endTime}`);
+      logger.debug(`Monitoring performance for validator ${address}`);
+      logger.debug(`Time range: ${new Date(startTime * 1000)} to ${new Date(endTime * 1000)}`);
       
       let result = await this.queryPerformance(address, startTime, endTime);
       
       if (result.committeeParticipations === 0 && result.totalSignatures === 0) {
         const extendedStartTime = startTime - timeWindow;
-        logger.debug(`No recent activity found, extending time range to ${extendedStartTime}`);
+        logger.debug(`No recent activity found, extending time range to ${new Date(extendedStartTime * 1000)}`);
         result = await this.queryPerformance(address, extendedStartTime, endTime);
       }
 
       // Ödülleri hesapla
       const totalRewards = await this.rewardsService.calculateRewardsForTimeRange(address, startTime, endTime);
+      logger.debug(`Total rewards from RewardsService: ${totalRewards.toString()}`);
       
       // Performans metriklerini hesapla
       const signatureRate = result.committeeParticipations > 0 
@@ -324,7 +326,6 @@ export class ValidatorDBService extends BaseDBService {
       
       const performanceScore = Math.min(((signatureRate + batchRate) / 2) * 100, 100);
 
-      // Sonuçları string'e dönüştür
       const serializedResult = {
         committeeParticipations: result.committeeParticipations,
         totalSignatures: result.totalSignatures,
@@ -333,9 +334,8 @@ export class ValidatorDBService extends BaseDBService {
         performanceScore: Number(performanceScore.toFixed(2))
       };
 
-      logger.debug(`Performance metrics calculated for ${address}:`, serializedResult);
+      logger.debug(`Final performance metrics for ${address}:`, serializedResult);
       return serializedResult;
-
     } catch (error) {
       logger.error(`Error in monitorValidatorPerformance for ${address}:`, error);
       throw error;

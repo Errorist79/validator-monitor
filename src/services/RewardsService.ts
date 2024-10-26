@@ -299,15 +299,22 @@ export class RewardsService {
   }
 
   async calculateRewardsForTimeRange(validatorAddress: string, startTime: number, endTime: number): Promise<bigint> {
-    // Debug ekleyelim
-    logger.debug(`Calculating rewards for time range: ${startTime} - ${endTime}`);
-    const startBlock = await this.snarkOSDBService.getBlockHeightByTimestamp(startTime);
-    const endBlock = await this.snarkOSDBService.getBlockHeightByTimestamp(endTime);
-    logger.debug(`Converted to block range: ${startBlock} - ${endBlock}`);
-    
-    const rewards = await this.getValidatorRewards(validatorAddress, startBlock, endBlock);
-    logger.debug(`Total rewards calculated: ${rewards.toString()}`);
-    return rewards;
+    try {
+      logger.debug(`Calculating rewards for time range: ${startTime} - ${endTime} for validator ${validatorAddress}`);
+      
+      // Doğrudan zaman aralığını kullanarak ödülleri alalım
+      const rewards = await this.rewardsDBService.getRewardsInTimeRange(validatorAddress, startTime, endTime, true);
+      
+      const totalRewards = rewards.reduce((sum, reward) => sum + reward.amount, BigInt(0));
+      
+      logger.debug(`Found ${rewards.length} reward records`);
+      logger.debug(`Total rewards calculated: ${totalRewards.toString()}`);
+      
+      return totalRewards;
+    } catch (error) {
+      logger.error(`Error calculating rewards for time range: ${error}`);
+      throw error;
+    }
   }
 }
 
