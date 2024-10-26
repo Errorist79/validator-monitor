@@ -37,17 +37,28 @@ export class RewardsDBService extends BaseDBService {
 
   async getRewardsInTimeRange(address: string, startTime: number, endTime: number, isValidator: boolean): Promise<Array<{amount: bigint, timestamp: number}>> {
     const query = `
-      SELECT r.reward, b.timestamp
+      SELECT r.reward, r.timestamp, r.block_height
       FROM rewards r
-      JOIN blocks b ON r.block_height = b.height
-      WHERE r.address = $1 AND b.timestamp BETWEEN $2 AND $3 AND r.is_validator = $4
-      ORDER BY b.timestamp ASC
+      WHERE r.address = $1 
+      AND r.timestamp BETWEEN $2 AND $3 
+      AND r.is_validator = $4
+      ORDER BY r.timestamp ASC
     `;
-    const result = await this.query(query, [address, startTime, endTime, isValidator]);
-    return result.rows.map((row: { reward: string; timestamp: number }) => ({
-      amount: BigInt(row.reward),
-      timestamp: row.timestamp
-    }));
+    
+    try {
+      const result = await this.query(query, [address, startTime, endTime, isValidator]);
+      logger.debug(`Query params: address=${address}, startTime=${startTime}, endTime=${endTime}, isValidator=${isValidator}`);
+      logger.debug(`Found ${result.rows.length} reward records`);
+      logger.debug(`First record: ${JSON.stringify(result.rows[0])}`);
+      
+      return result.rows.map((row: { reward: string; timestamp: number }) => ({
+        amount: BigInt(row.reward),
+        timestamp: row.timestamp
+      }));
+    } catch (error) {
+      logger.error('Error getting rewards in time range:', error);
+      throw error;
+    }
   }
 
   async bulkUpdateRewards(updates: Array<{
@@ -57,27 +68,44 @@ export class RewardsDBService extends BaseDBService {
     timestamp: bigint;
     isValidator: boolean;
   }>): Promise<void> {
-    const query = `
-      INSERT INTO rewards (address, reward, block_height, timestamp, is_validator)
-      VALUES ${updates.map((_, index) => 
-        `($${index * 5 + 1}, $${index * 5 + 2}, $${index * 5 + 3}, $${index * 5 + 4}, $${index * 5 + 5})`
-      ).join(', ')}
-      ON CONFLICT (address, block_height) 
-      DO UPDATE SET 
-        reward = EXCLUDED.reward,
-        timestamp = EXCLUDED.timestamp,
-        is_validator = EXCLUDED.is_validator
-    `;
+    if (updates.length === 0) return;
 
-    const values = updates.flatMap(u => [
-      u.address,
-      u.reward.toString(),
-      u.blockHeight.toString(),
-      u.timestamp.toString(),
-      u.isValidator
-    ]);
+    // Batch size'ı belirle
+    const BATCH_SIZE = 1000;
+    const batches = [];
+    
+    for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+      const batchUpdates = updates.slice(i, i + BATCH_SIZE);
+      const query = `
+        INSERT INTO rewards (address, reward, block_height, timestamp, is_validator)
+        VALUES ${batchUpdates.map((_, idx) => 
+          `($${idx * 5 + 1}, $${idx * 5 + 2}, $${idx * 5 + 3}, $${idx * 5 + 4}, $${idx * 5 + 5})`
+        ).join(', ')}
+        ON CONFLICT (address, block_height) 
+        DO UPDATE SET 
+          reward = EXCLUDED.reward,
+          timestamp = EXCLUDED.timestamp,
+          is_validator = EXCLUDED.is_validator;
+      `;
 
-    await this.query(query, values);
+      const values = batchUpdates.flatMap(u => [
+        u.address,
+        u.reward.toString(),
+        u.blockHeight.toString(),
+        u.timestamp.toString(),
+        u.isValidator
+      ]);
+
+      batches.push(this.query(query, values));
+    }
+
+    try {
+      await Promise.all(batches);
+      logger.debug(`Successfully updated ${updates.length} reward entries in ${batches.length} batches`);
+    } catch (error) {
+      logger.error('Error in bulkUpdateRewards:', error);
+      throw error;
+    }
   }
 
   async getDelegators(validatorAddress: string): Promise<Array<{ address: string; amount: bigint }>> {
@@ -102,5 +130,27 @@ export class RewardsDBService extends BaseDBService {
       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
     `;
     await this.query(query, [blockHeight.toString()]);
+  }
+
+  async getBlocksWithRewards(startBlock: number, endBlock: number): Promise<Map<number, {
+    reward: bigint;
+    timestamp: number;
+  }>> {
+    const query = `
+      SELECT height, block_reward, timestamp 
+      FROM blocks 
+      WHERE height BETWEEN $1 AND $2 
+      AND block_reward IS NOT NULL
+      ORDER BY height ASC
+    `;
+    
+    const result = await this.query(query, [startBlock, endBlock]);
+    return new Map(result.rows.map(row => [
+      row.height,
+      {
+        reward: BigInt(row.block_reward),
+        timestamp: row.timestamp
+      }
+    ]));
   }
 }

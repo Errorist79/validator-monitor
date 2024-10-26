@@ -151,6 +151,10 @@ export class SnarkOSDBService {
     return this.blockDBService.getBlockByHeight(height);
   }
 
+  /* async getBlocksInHeightRange(startHeight: number, endHeight: number): Promise<BlockAttributes[]> {
+    return this.blockDBService.getBlocksInHeightRange(startHeight, endHeight);
+  } */
+
   async getBlocksInTimeRange(startTime: number, endTime: number): Promise<Array<{ height: number, timestamp: number }>> {
     return this.blockDBService.getBlocksInTimeRange(startTime, endTime);
   }
@@ -224,8 +228,8 @@ export class SnarkOSDBService {
     return this.validatorDBService.deactivateValidator(address);
   }
 
-  async getCommitteeForBlock(blockHeight: number): Promise<{ members: { [address: string]: [number, boolean, number] } } | null> {
-    return this.committeeDBService.getCommitteeForBlock(blockHeight);
+  async getCommitteesForBlocks(startBlock: number, endBlock: number): Promise<Map<number, { members: { [address: string]: [number, boolean, number] } }>> {
+    return this.committeeDBService.getCommitteesForBlocks(startBlock, endBlock);
   }
 
   async getCommitteeSizeForRound(round: bigint): Promise<{ committee_size: number }> {

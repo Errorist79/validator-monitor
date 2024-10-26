@@ -265,27 +265,34 @@ export class CommitteeDBService extends BaseDBService {
     return result.rows;
   }
 
-  async getCommitteeForBlock(blockHeight: number): Promise<{ members: { [address: string]: [number, boolean, number] } } | null> {
+  async getCommitteesForBlocks(startBlock: number, endBlock: number): Promise<Map<number, { members: { [address: string]: [number, boolean, number] } }>> {
     const query = `
-      SELECT cm.address, cm.total_stake, cm.is_open, cm.commission
+      SELECT cp.block_height, cm.address, cm.total_stake, cm.is_open, cm.commission
       FROM committee_members cm
       JOIN committee_participation cp ON cm.address = cp.validator_address
-      WHERE cp.block_height = $1
+      WHERE cp.block_height BETWEEN $1 AND $2
+      ORDER BY cp.block_height
     `;
     try {
-      const result = await this.query(query, [blockHeight]);
+      const result = await this.query(query, [startBlock, endBlock]);
       if (result.rows.length === 0) {
-        logger.warn(`No committee information found for block ${blockHeight}`);
-        return null;
+        logger.warn(`No committee information found for block range ${startBlock} to ${endBlock}`);
+        return new Map();
       }
 
-      const members: { [address: string]: [number, boolean, number] } = {};
+      const committees = new Map<number, { members: { [address: string]: [number, boolean, number] } }>();
+      
       for (const row of result.rows) {
-        members[row.address] = [Number(row.total_stake), row.is_open, Number(row.commission)];
+        if (!committees.has(row.block_height)) {
+          committees.set(row.block_height, { members: {} });
+        }
+        const committee = committees.get(row.block_height)!;
+        committee.members[row.address] = [Number(row.total_stake), row.is_open, Number(row.commission)];
       }
-      return { members };
+      
+      return committees;
     } catch (error) {
-      logger.error(`Error retrieving committee information for block height ${blockHeight}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      logger.error(`Error retrieving committee information for block range ${startBlock} to ${endBlock}: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
       throw error;
     }
   }

@@ -11,6 +11,8 @@ export class RewardsService {
   async calculateAndDistributeRewards(latestBlockHeight: number): Promise<void> {
     try {
       const lastProcessedBlock = await this.rewardsDBService.getLatestProcessedBlockHeight();
+      logger.debug(`Last processed block: ${lastProcessedBlock}`);
+      
       const earliestBlockHeight = await this.snarkOSDBService.getEarliestBlockHeight();
       const lastProcessedBlockNumber = lastProcessedBlock ? Number(lastProcessedBlock) : null;
       const earliestBlockHeightNumber = Number(earliestBlockHeight);
@@ -25,11 +27,11 @@ export class RewardsService {
       for (let batchStart = startBlock; batchStart <= latestBlockHeight; batchStart += BATCH_SIZE) {
         const batchEnd = Math.min(batchStart + BATCH_SIZE - 1, latestBlockHeight);
         
+        logger.debug(`Processing rewards for blocks ${batchStart} to ${batchEnd}`);
         await this.processBatchRewards(batchStart, batchEnd);
         
         // Her batch'ten sonra son işlenen blok yüksekliğini güncelle
         await this.rewardsDBService.updateLatestProcessedBlockHeight(batchEnd);
-        
         logger.info(`Processed rewards for blocks ${batchStart} to ${batchEnd}`);
       }
 
@@ -45,12 +47,72 @@ export class RewardsService {
   }
 
   private async processBatchRewards(startBlock: number, endBlock: number): Promise<void> {
-    for (let height = startBlock; height <= endBlock; height++) {
-      await this.processBlockRewards(height);
+    try {
+      // Blok ödüllerini ve zaman damgalarını tek seferde al
+      const blocksWithRewards = await this.rewardsDBService.getBlocksWithRewards(startBlock, endBlock);
+      const committees = await this.snarkOSDBService.getCommitteesForBlocks(startBlock, endBlock);
+      
+      const rewardUpdates: Array<{
+        address: string;
+        reward: bigint;
+        blockHeight: bigint;
+        timestamp: bigint;
+        isValidator: boolean;
+      }> = [];
+
+      // Her blok için ödülleri hesapla
+      for (const [height, blockData] of blocksWithRewards.entries()) {
+        const committee = committees.get(height);
+        if (!committee?.members) continue;
+
+        const totalStake = this.calculateTotalStake(committee.members);
+        
+        // Validatör ödüllerini hesapla
+        for (const [address, memberInfo] of Object.entries(committee.members)) {
+          const [stake, isOpen, commission] = memberInfo;
+          const memberStake = BigInt(stake);
+          
+          const { validatorReward, delegatorReward } = this.calculateRewards(
+            memberStake,
+            totalStake,
+            blockData.reward,
+            BigInt(commission),
+            BigInt(stake) - memberStake
+          );
+
+          rewardUpdates.push({
+            address,
+            reward: validatorReward,
+            blockHeight: BigInt(height),
+            timestamp: BigInt(blockData.timestamp),
+            isValidator: true
+          });
+
+          // Delegatör ödüllerini ekle
+          if (isOpen) {
+            const delegatorRewards = await this.calculateDelegatorRewards(
+              address,
+              delegatorReward,
+              BigInt(height),
+              BigInt(blockData.timestamp)
+            );
+            rewardUpdates.push(...delegatorRewards);
+          }
+        }
+      }
+
+      // Toplu güncelleme yap
+      if (rewardUpdates.length > 0) {
+        await this.rewardsDBService.bulkUpdateRewards(rewardUpdates);
+        logger.info(`Processed rewards for ${rewardUpdates.length} entries in blocks ${startBlock}-${endBlock}`);
+      }
+    } catch (error) {
+      logger.error(`Error in processBatchRewards for blocks ${startBlock}-${endBlock}:`, error);
+      throw error;
     }
   }
 
-  private async processBlockRewards(blockHeight: number): Promise<void> {
+  /* private async processBlockRewards(blockHeight: number): Promise<void> {
     const block = await this.snarkOSDBService.getBlockByHeight(blockHeight);
     if (!block) {
       logger.warn(`No block found for height ${blockHeight}`);
@@ -135,7 +197,7 @@ export class RewardsService {
         update.isValidator
       )
     ));
-  }
+  } */
 
   private calculateTotalStake(members: Record<string, [number, boolean, number]>): bigint {
     return Object.values(members).reduce((sum, [stake]) => sum + BigInt(stake), BigInt(0));
@@ -146,7 +208,13 @@ export class RewardsService {
     totalDelegatorReward: bigint, 
     blockHeight: bigint, 
     timestamp: bigint
-  ): Promise<Array<{ address: string; reward: bigint; blockHeight: bigint; timestamp: bigint }>> {
+  ): Promise<Array<{ 
+    address: string; 
+    reward: bigint; 
+    blockHeight: bigint; 
+    timestamp: bigint;
+    isValidator: boolean;  // isValidator alanını ekledik
+  }>> {
     const delegators = await this.rewardsDBService.getDelegators(validatorAddress);
     const totalDelegatedStake = delegators.reduce((sum, d) => sum + d.amount, BigInt(0));
     
@@ -154,7 +222,8 @@ export class RewardsService {
       address: delegator.address,
       reward: (delegator.amount * totalDelegatorReward) / totalDelegatedStake,
       blockHeight,
-      timestamp
+      timestamp,
+      isValidator: false  // Delegatörler için her zaman false
     }));
   }
 
@@ -230,9 +299,15 @@ export class RewardsService {
   }
 
   async calculateRewardsForTimeRange(validatorAddress: string, startTime: number, endTime: number): Promise<bigint> {
+    // Debug ekleyelim
+    logger.debug(`Calculating rewards for time range: ${startTime} - ${endTime}`);
     const startBlock = await this.snarkOSDBService.getBlockHeightByTimestamp(startTime);
     const endBlock = await this.snarkOSDBService.getBlockHeightByTimestamp(endTime);
-    return this.getValidatorRewards(validatorAddress, startBlock, endBlock);
+    logger.debug(`Converted to block range: ${startBlock} - ${endBlock}`);
+    
+    const rewards = await this.getValidatorRewards(validatorAddress, startBlock, endBlock);
+    logger.debug(`Total rewards calculated: ${rewards.toString()}`);
+    return rewards;
   }
 }
 

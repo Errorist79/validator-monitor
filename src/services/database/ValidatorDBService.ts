@@ -135,32 +135,31 @@ export class ValidatorDBService extends BaseDBService {
         FROM batches
         WHERE author = $1 AND timestamp >= $2 AND timestamp <= $3
       ), rewards_sum AS (
-        SELECT COALESCE(SUM(r.reward::numeric), 0) as total_rewards
-        FROM rewards r
-        JOIN blocks b ON r.block_height = b.height
-        WHERE r.address = $1 AND b.timestamp BETWEEN $2 AND $3 AND r.is_validator = true
+        SELECT COALESCE(SUM(reward::numeric), 0)::text as total_rewards
+        FROM rewards
+        WHERE address = $1 
+        AND timestamp BETWEEN $2 AND $3 
+        AND is_validator = true
       )
       SELECT 
         committee_participations.participations as committee_participations,
         signature_count.total_signatures as total_signatures,
         batch_count.total_batches as total_batches_produced,
-        rewards_sum.total_rewards as total_rewards
+        rewards_sum.total_rewards
       FROM committee_participations, signature_count, batch_count, rewards_sum
     `;
 
     try {
       const result = await this.query(query, [address, startTime, endTime]);
-      logger.debug(`Raw query result for ${address}: ${JSON.stringify(serializeBigInt(result.rows[0]))}`);
-
-      return serializeBigInt({
+      
+      return {
         committeeParticipations: parseInt(result.rows[0].committee_participations) || 0,
         totalSignatures: parseInt(result.rows[0].total_signatures) || 0,
         totalBatchesProduced: parseInt(result.rows[0].total_batches_produced) || 0,
-        totalRewards: result.rows[0].total_rewards?.toString() || '0'
-      });
+        totalRewards: result.rows[0].total_rewards || '0'
+      };
     } catch (error) {
-      logger.error(`Error in queryPerformance for ${address}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      logger.debug(`Query parameters: address=${address}, startTime=${startTime}, endTime=${endTime}`);
+      logger.error(`Error in queryPerformance for ${address}:`, error);
       throw error;
     }
   }
@@ -298,28 +297,48 @@ export class ValidatorDBService extends BaseDBService {
 
   async monitorValidatorPerformance(address: string, timeWindow: number): Promise<any> {
     const endTime = Math.floor(Date.now() / 1000);
-    let startTime = endTime - timeWindow;
+    const startTime = endTime - timeWindow;
     
-    logger.debug(`Monitoring performance for validator ${address} from ${new Date(startTime * 1000)} to ${new Date(endTime * 1000)}`);
+    try {
+      logger.debug(`Monitoring performance for validator ${address} from ${startTime} to ${endTime}`);
+      
+      let result = await this.queryPerformance(address, startTime, endTime);
+      
+      if (result.committeeParticipations === 0 && result.totalSignatures === 0) {
+        const extendedStartTime = startTime - timeWindow;
+        logger.debug(`No recent activity found, extending time range to ${extendedStartTime}`);
+        result = await this.queryPerformance(address, extendedStartTime, endTime);
+      }
 
-    let result = await this.queryPerformance(address, startTime, endTime);
+      // Ödülleri hesapla
+      const totalRewards = await this.rewardsService.calculateRewardsForTimeRange(address, startTime, endTime);
+      
+      // Performans metriklerini hesapla
+      const signatureRate = result.committeeParticipations > 0 
+        ? result.totalSignatures / result.committeeParticipations 
+        : 0;
+      
+      const batchRate = result.committeeParticipations > 0 
+        ? result.totalBatchesProduced / result.committeeParticipations 
+        : 0;
+      
+      const performanceScore = Math.min(((signatureRate + batchRate) / 2) * 100, 100);
 
-    if (result.committeeParticipations === 0 && result.totalSignatures === 0 && result.totalBatchesProduced === 0) {
-      const extendedStartTime = endTime - (timeWindow * 2);
-      logger.debug(`No activity found. Extending time range to ${new Date(extendedStartTime * 1000)}`);
-      result = await this.queryPerformance(address, extendedStartTime, endTime);
+      // Sonuçları string'e dönüştür
+      const serializedResult = {
+        committeeParticipations: result.committeeParticipations,
+        totalSignatures: result.totalSignatures,
+        totalBatchesProduced: result.totalBatchesProduced,
+        totalRewards: totalRewards.toString(),
+        performanceScore: Number(performanceScore.toFixed(2))
+      };
+
+      logger.debug(`Performance metrics calculated for ${address}:`, serializedResult);
+      return serializedResult;
+
+    } catch (error) {
+      logger.error(`Error in monitorValidatorPerformance for ${address}:`, error);
+      throw error;
     }
-
-    const totalRewards = await this.rewardsService.calculateRewardsForTimeRange(address, startTime, endTime);
-
-    const signatureRate = result.committeeParticipations > 0 ? result.totalSignatures / result.committeeParticipations : 0;
-    const batchRate = result.committeeParticipations > 0 ? result.totalBatchesProduced / result.committeeParticipations : 0;
-    const performanceScore = Math.min(((signatureRate + batchRate) / 2) * 100, 100);
-
-    return serializeBigInt({
-      ...result,
-      totalRewards,
-      performanceScore: Number(performanceScore.toFixed(2))
-    });
   }
 }

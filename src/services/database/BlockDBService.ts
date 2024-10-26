@@ -326,6 +326,31 @@ export class BlockDBService extends BaseDBService {
     }
   }
 
+  async getBlocksInHeightRange(startHeight: number, endHeight: number): Promise<BlockAttributes[]> {
+    try {
+      const query = `
+        SELECT *
+        FROM blocks
+        WHERE height BETWEEN $1 AND $2
+        ORDER BY height ASC
+      `;
+      const result = await this.query(query, [startHeight, endHeight]);
+      
+      if (result.rows.length === 0) {
+        logger.warn(`${startHeight} ve ${endHeight} arasında blok bulunamadı`);
+        return [];
+      }
+      
+      return result.rows.map(block => ({
+        ...block,
+        block_reward: block.block_reward ? BigInt(block.block_reward) : undefined
+      }));
+    } catch (error) {
+      logger.error(`${startHeight} ve ${endHeight} arasındaki bloklar alınırken hata oluştu: ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);
+      throw error;
+    }
+  }
+
   async getBlockByHeight(height: number): Promise<BlockAttributes | null> {
     try {
       const query = `
