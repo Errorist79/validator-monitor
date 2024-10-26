@@ -326,11 +326,15 @@ export class ValidatorDBService extends BaseDBService {
       
       const performanceScore = Math.min(((signatureRate + batchRate) / 2) * 100, 100);
 
+      // Aleo rewards'ı 10^6 decimal ile formatla
+      const formattedRewards = (Number(totalRewards) / 1_000_000).toFixed(6);
+
       const serializedResult = {
         committeeParticipations: result.committeeParticipations,
         totalSignatures: result.totalSignatures,
         totalBatchesProduced: result.totalBatchesProduced,
-        totalRewards: totalRewards.toString(),
+        totalRewards: formattedRewards,
+        rawTotalRewards: totalRewards.toString(),
         performanceScore: Number(performanceScore.toFixed(2))
       };
 

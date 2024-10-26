@@ -374,6 +374,7 @@ export class PerformanceMetricsService {
         totalSignatures: performance.totalSignatures,
         totalBatchesProduced: performance.totalBatchesProduced,
         totalRewards: performance.totalRewards,
+        rawTotalRewards: performance.rawTotalRewards,
         performanceScore: Number(performance.performanceScore.toFixed(2)),
         uptimePercentage: uptime !== null ? Number(uptime.toFixed(2)) : null,
         timeFrame: timeFrame
