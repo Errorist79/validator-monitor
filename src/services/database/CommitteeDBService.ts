@@ -167,6 +167,7 @@ export class CommitteeDBService extends BaseDBService {
         const existingMember = uniqueMembersMap.get(key);
         existingMember.last_seen_block = Math.max(existingMember.last_seen_block, member.last_seen_block);
         existingMember.total_stake = member.total_stake;
+        existingMember.self_stake = member.self_stake;
         existingMember.is_open = member.is_open;
         existingMember.commission = member.commission;
         existingMember.is_active = member.is_active;
@@ -180,6 +181,7 @@ export class CommitteeDBService extends BaseDBService {
       m.first_seen_block,
       m.last_seen_block,
       m.total_stake,
+      m.self_stake,
       m.is_open,
       m.commission,
       m.is_active,
@@ -187,11 +189,12 @@ export class CommitteeDBService extends BaseDBService {
     ]);
 
     const query = format(`
-      INSERT INTO committee_members (address, first_seen_block, last_seen_block, total_stake, is_open, commission, is_active, block_height)
+      INSERT INTO committee_members (address, first_seen_block, last_seen_block, total_stake, self_stake, is_open, commission, is_active, block_height)
       VALUES %L
       ON CONFLICT (address) DO UPDATE SET
         last_seen_block = EXCLUDED.last_seen_block,
         total_stake = EXCLUDED.total_stake,
+        self_stake = EXCLUDED.self_stake,
         is_open = EXCLUDED.is_open,
         commission = EXCLUDED.commission,
         is_active = EXCLUDED.is_active,
@@ -265,9 +268,9 @@ export class CommitteeDBService extends BaseDBService {
     return result.rows;
   }
 
-  async getCommitteesForBlocks(startBlock: number, endBlock: number): Promise<Map<number, { members: { [address: string]: [number, boolean, number] } }>> {
+  async getCommitteesForBlocks(startBlock: number, endBlock: number): Promise<Map<number, { members: { [address: string]: [number, boolean, number, number] } }>> {
     const query = `
-      SELECT cp.block_height, cm.address, cm.total_stake, cm.is_open, cm.commission
+      SELECT cp.block_height, cm.address, cm.total_stake, cm.self_stake, cm.is_open, cm.commission
       FROM committee_members cm
       JOIN committee_participation cp ON cm.address = cp.validator_address
       WHERE cp.block_height BETWEEN $1 AND $2
@@ -280,14 +283,14 @@ export class CommitteeDBService extends BaseDBService {
         return new Map();
       }
 
-      const committees = new Map<number, { members: { [address: string]: [number, boolean, number] } }>();
+      const committees = new Map<number, { members: { [address: string]: [number, boolean, number, number] } }>();
       
       for (const row of result.rows) {
         if (!committees.has(row.block_height)) {
           committees.set(row.block_height, { members: {} });
         }
         const committee = committees.get(row.block_height)!;
-        committee.members[row.address] = [Number(row.total_stake), row.is_open, Number(row.commission)];
+        committee.members[row.address] = [Number(row.total_stake), row.is_open, Number(row.commission), Number(row.self_stake)];
       }
       
       return committees;

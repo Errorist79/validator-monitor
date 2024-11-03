@@ -354,7 +354,7 @@ export class PerformanceMetricsService {
     }
   }
 
-  async getValidatorPerformance(validatorAddress: string, timeFrame: number = 24 * 60 * 60): Promise<any> {
+  async getValidatorPerformance(validatorAddress: string, timeFrame: number = 60 * 60): Promise<any> {
     try {
       const cacheKey = `validator_performance_${validatorAddress}_${timeFrame}`;
       const cachedData = await this.cacheService.get(cacheKey);
@@ -373,15 +373,24 @@ export class PerformanceMetricsService {
         committeeParticipations: performance.committeeParticipations,
         totalSignatures: performance.totalSignatures,
         totalBatchesProduced: performance.totalBatchesProduced,
-        totalRewards: performance.totalRewards,
-        rawTotalRewards: performance.rawTotalRewards,
+        rewards: {
+          total: performance.rewards.total,
+          selfStake: performance.rewards.selfStake,
+          commission: performance.rewards.commission,
+          delegators: performance.rewards.delegators
+        },
+        rawRewards: {
+          total: performance.rawRewards.total,
+          selfStake: performance.rawRewards.selfStake,
+          commission: performance.rawRewards.commission,
+          delegators: performance.rawRewards.delegators
+        },
         performanceScore: Number(performance.performanceScore.toFixed(2)),
         uptimePercentage: uptime !== null ? Number(uptime.toFixed(2)) : null,
         timeFrame: timeFrame
       });
 
       await this.cacheService.set(cacheKey, JSON.stringify(result), 5 * 60);
-
       return result;
     } catch (error) {
       logger.error(`Validator performansı alınırken bir hata oluştu (${validatorAddress}): ${error instanceof Error ? error.message : 'Bilinmeyen hata'}`);

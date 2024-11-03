@@ -114,7 +114,10 @@ export class ValidatorDBService extends BaseDBService {
     committeeParticipations: number,
     totalSignatures: number,
     totalBatchesProduced: number,
-    totalRewards: string
+    totalRewards: string,
+    selfStakeRewards: string,
+    commissionRewards: string,
+    delegatorRewards: string
   }> {
     logger.debug(`Querying performance for ${address} from ${startTime} to ${endTime}`);
     
@@ -135,7 +138,11 @@ export class ValidatorDBService extends BaseDBService {
         FROM batches
         WHERE author = $1 AND timestamp >= $2 AND timestamp <= $3
       ), rewards_sum AS (
-        SELECT COALESCE(SUM(reward::numeric), 0)::text as total_rewards
+        SELECT 
+          COALESCE(SUM(reward::numeric), 0)::text as total_rewards,
+          COALESCE(SUM(self_stake_reward::numeric), 0)::text as self_stake_rewards,
+          COALESCE(SUM(commission_reward::numeric), 0)::text as commission_rewards,
+          COALESCE(SUM(delegator_reward::numeric), 0)::text as delegator_rewards
         FROM rewards
         WHERE address = $1 
         AND timestamp BETWEEN $2 AND $3 
@@ -145,7 +152,10 @@ export class ValidatorDBService extends BaseDBService {
         committee_participations.participations as committee_participations,
         signature_count.total_signatures as total_signatures,
         batch_count.total_batches as total_batches_produced,
-        rewards_sum.total_rewards
+        rewards_sum.total_rewards,
+        rewards_sum.self_stake_rewards,
+        rewards_sum.commission_rewards,
+        rewards_sum.delegator_rewards
       FROM committee_participations, signature_count, batch_count, rewards_sum
     `;
 
@@ -156,7 +166,10 @@ export class ValidatorDBService extends BaseDBService {
         committeeParticipations: parseInt(result.rows[0].committee_participations) || 0,
         totalSignatures: parseInt(result.rows[0].total_signatures) || 0,
         totalBatchesProduced: parseInt(result.rows[0].total_batches_produced) || 0,
-        totalRewards: result.rows[0].total_rewards || '0'
+        totalRewards: result.rows[0].total_rewards || '0',
+        selfStakeRewards: result.rows[0].self_stake_rewards || '0',
+        commissionRewards: result.rows[0].commission_rewards || '0',
+        delegatorRewards: result.rows[0].delegator_rewards || '0'
       };
     } catch (error) {
       logger.error(`Error in queryPerformance for ${address}:`, error);
@@ -327,14 +340,24 @@ export class ValidatorDBService extends BaseDBService {
       const performanceScore = Math.min(((signatureRate + batchRate) / 2) * 100, 100);
 
       // Aleo rewards'ı 10^6 decimal ile formatla
-      const formattedRewards = (Number(totalRewards) / 1_000_000).toFixed(6);
+      const formatRewards = (amount: bigint): string => (Number(amount) / 1_000_000).toFixed(6);
 
       const serializedResult = {
         committeeParticipations: result.committeeParticipations,
         totalSignatures: result.totalSignatures,
         totalBatchesProduced: result.totalBatchesProduced,
-        totalRewards: formattedRewards,
-        rawTotalRewards: totalRewards.toString(),
+        rewards: {
+          total: formatRewards(BigInt(result.totalRewards)),
+          selfStake: formatRewards(BigInt(result.selfStakeRewards)),
+          commission: formatRewards(BigInt(result.commissionRewards)),
+          delegators: formatRewards(BigInt(result.delegatorRewards))
+        },
+        rawRewards: {
+          total: totalRewards.toString(),
+          selfStake: result.selfStakeRewards,
+          commission: result.commissionRewards,
+          delegators: result.delegatorRewards
+        },
         performanceScore: Number(performanceScore.toFixed(2))
       };
 

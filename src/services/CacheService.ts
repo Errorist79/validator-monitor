@@ -59,8 +59,27 @@ export class CacheService {
     return value;
   }
 
+  private serialize(value: any): string {
+    return JSON.stringify(value, (_, v) => 
+      typeof v === 'bigint' ? v.toString() : v
+    );
+  }
+
+  private deserialize(value: string): any {
+    return JSON.parse(value, (_, v) => {
+      if (typeof v === 'string' && /^\d+$/.test(v)) {
+        try {
+          return BigInt(v);
+        } catch {
+          return v;
+        }
+      }
+      return v;
+    });
+  }
+
   async set<T>(key: string, value: T, ttl?: number): Promise<void> {
-    const serializedValue = JSON.stringify(value, this.replacer);
+    const serializedValue = this.serialize(value);
     if (ttl) {
       await this.strategy.set(key, serializedValue, ttl);
     } else {
@@ -72,7 +91,7 @@ export class CacheService {
     const data = await this.strategy.get(key);
     if (data) {
       try {
-        return JSON.parse(data, this.reviver);
+        return this.deserialize(data);
       } catch (error) {
         logger.error(`Error parsing cached data for key ${key}:`, error);
         return null;

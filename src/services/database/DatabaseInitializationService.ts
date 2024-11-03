@@ -128,6 +128,7 @@ export class DatabaseInitializationService extends BaseDBService {
         first_seen_block BIGINT NOT NULL,
         last_seen_block BIGINT,
         total_stake NUMERIC NOT NULL,
+        self_stake BIGINT NOT NULL DEFAULT 0,
         is_open BOOLEAN NOT NULL,
         commission NUMERIC NOT NULL,
         is_active BOOLEAN NOT NULL DEFAULT true,
@@ -166,6 +167,9 @@ export class DatabaseInitializationService extends BaseDBService {
         id SERIAL PRIMARY KEY,
         address TEXT NOT NULL,
         reward NUMERIC NOT NULL,
+        self_stake_reward NUMERIC DEFAULT 0,
+        commission_reward NUMERIC DEFAULT 0,
+        delegator_reward NUMERIC DEFAULT 0,
         block_height BIGINT NOT NULL,
         timestamp BIGINT NOT NULL,
         is_validator BOOLEAN NOT NULL,
@@ -277,6 +281,7 @@ export class DatabaseInitializationService extends BaseDBService {
           first_seen_block: 'BIGINT NOT NULL',
           last_seen_block: 'BIGINT',
           total_stake: 'NUMERIC NOT NULL',
+          self_stake: 'BIGINT NOT NULL DEFAULT 0',
           is_open: 'BOOLEAN NOT NULL',
           commission: 'NUMERIC NOT NULL',
           is_active: 'BOOLEAN NOT NULL DEFAULT true',
@@ -317,6 +322,9 @@ export class DatabaseInitializationService extends BaseDBService {
           id: 'INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY',
           address: 'TEXT NOT NULL',
           reward: 'NUMERIC NOT NULL',
+          self_stake_reward: 'NUMERIC DEFAULT 0',  // Yeni
+          commission_reward: 'NUMERIC DEFAULT 0',   // Yeni
+          delegator_reward: 'NUMERIC DEFAULT 0',    // Yeni
           block_height: 'BIGINT NOT NULL',
           timestamp: 'BIGINT NOT NULL',
           is_validator: 'BOOLEAN NOT NULL'

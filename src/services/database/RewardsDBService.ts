@@ -4,26 +4,49 @@ import logger from '../../utils/logger.js';
 export class RewardsDBService extends BaseDBService {
   async updateRewards(
     address: string, 
-    reward: bigint, 
+    reward: bigint,
+    selfStakeReward: bigint,
+    commissionReward: bigint,
+    delegatorReward: bigint,
     blockHeight: bigint, 
     timestamp: bigint, 
     isValidator: boolean
   ): Promise<void> {
-    logger.debug(`Updating rewards in DB: address=${address}, reward=${reward}, blockHeight=${blockHeight}, timestamp=${timestamp}, isValidator=${isValidator}`);
+    logger.debug(`Updating rewards in DB: address=${address}, total_reward=${reward}, self_stake=${selfStakeReward}, commission=${commissionReward}, delegator=${delegatorReward}`);
+    
+    // Mevcut sorgu doğru, sadece debug log ekleyelim
     const query = `
-      INSERT INTO rewards (address, reward, block_height, timestamp, is_validator)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO rewards (
+        address, reward, self_stake_reward, commission_reward, 
+        delegator_reward, block_height, timestamp, is_validator
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       ON CONFLICT (address, block_height)
-      DO UPDATE SET reward = EXCLUDED.reward, timestamp = EXCLUDED.timestamp
+      DO UPDATE SET 
+        reward = EXCLUDED.reward,
+        self_stake_reward = EXCLUDED.self_stake_reward,
+        commission_reward = EXCLUDED.commission_reward,
+        delegator_reward = EXCLUDED.delegator_reward,
+        timestamp = EXCLUDED.timestamp
     `;
+    
     try {
-      await this.query(query, [address, reward.toString(), blockHeight.toString(), timestamp.toString(), isValidator]);
-      logger.debug(`Successfully updated rewards in DB`);
+      await this.query(query, [
+        address,
+        reward.toString(),
+        selfStakeReward.toString(),
+        commissionReward.toString(),
+        delegatorReward.toString(),
+        blockHeight.toString(),
+        timestamp.toString(),
+        isValidator
+      ]);
+      logger.debug(`Successfully updated rewards in DB for ${address} at block ${blockHeight}`);
     } catch (error) {
-      logger.error(`Error updating rewards in DB:`, error);
-      throw error;
+      logger.error(`Error updating rewards in DB for ${address}:`, error);
+        throw error;
+      }
     }
-  }
 
   async getRewardsInRange(address: string, startBlock: number, endBlock: number, isValidator: boolean): Promise<bigint> {
     const query = `
@@ -35,9 +58,21 @@ export class RewardsDBService extends BaseDBService {
     return BigInt(result.rows[0].total_rewards || 0);
   }
 
-  async getRewardsInTimeRange(address: string, startTime: number, endTime: number, isValidator: boolean): Promise<Array<{amount: bigint, timestamp: number}>> {
+  async getRewardsInTimeRange(
+    address: string, 
+    startTime: number, 
+    endTime: number, 
+    isValidator: boolean
+  ): Promise<Array<{
+    amount: bigint,
+    selfStakeAmount: bigint,
+    commissionAmount: bigint,
+    delegatorAmount: bigint,
+    timestamp: number
+  }>> {
     const query = `
-      SELECT r.reward, r.timestamp
+      SELECT r.reward, r.self_stake_reward, r.commission_reward, 
+             r.delegator_reward, r.timestamp
       FROM rewards r
       WHERE r.address = $1 
       AND r.timestamp BETWEEN $2 AND $3 
@@ -50,20 +85,13 @@ export class RewardsDBService extends BaseDBService {
       
       const result = await this.query(query, [address, startTime, endTime, isValidator]);
       
-      logger.debug(`Found ${result.rows.length} reward records`);
-      
-      // BigInt serileştirme hatasını önlemek için toString() kullanıyoruz
-      if (result.rows.length > 0) {
-        logger.debug(`Sample reward record: reward=${result.rows[0].reward}, timestamp=${result.rows[0].timestamp}`);
-      }
-      
-      return result.rows.map((row: { reward: string; timestamp: number }) => {
-        const amount = BigInt(row.reward || '0');
-        return {
-          amount,
-          timestamp: row.timestamp
-        };
-      });
+      return result.rows.map(row => ({
+        amount: BigInt(row.reward || '0'),
+        selfStakeAmount: BigInt(row.self_stake_reward || '0'),
+        commissionAmount: BigInt(row.commission_reward || '0'),
+        delegatorAmount: BigInt(row.delegator_reward || '0'),
+        timestamp: row.timestamp
+      }));
     } catch (error) {
       logger.error('Error getting rewards in time range:', error);
       throw error;
@@ -73,6 +101,9 @@ export class RewardsDBService extends BaseDBService {
   async bulkUpdateRewards(updates: Array<{
     address: string;
     reward: bigint;
+    selfStakeReward: bigint;
+    commissionReward: bigint;
+    delegatorReward: bigint;
     blockHeight: bigint;
     timestamp: bigint;
     isValidator: boolean;
@@ -86,13 +117,16 @@ export class RewardsDBService extends BaseDBService {
     for (let i = 0; i < updates.length; i += BATCH_SIZE) {
       const batchUpdates = updates.slice(i, i + BATCH_SIZE);
       const query = `
-        INSERT INTO rewards (address, reward, block_height, timestamp, is_validator)
+        INSERT INTO rewards (address, reward, self_stake_reward, commission_reward, delegator_reward, block_height, timestamp, is_validator)
         VALUES ${batchUpdates.map((_, idx) => 
-          `($${idx * 5 + 1}, $${idx * 5 + 2}, $${idx * 5 + 3}, $${idx * 5 + 4}, $${idx * 5 + 5})`
+          `($${idx * 8 + 1}, $${idx * 8 + 2}, $${idx * 8 + 3}, $${idx * 8 + 4}, $${idx * 8 + 5}, $${idx * 8 + 6}, $${idx * 8 + 7}, $${idx * 8 + 8})`
         ).join(', ')}
         ON CONFLICT (address, block_height) 
         DO UPDATE SET 
           reward = EXCLUDED.reward,
+          self_stake_reward = EXCLUDED.self_stake_reward,
+          commission_reward = EXCLUDED.commission_reward,
+          delegator_reward = EXCLUDED.delegator_reward,
           timestamp = EXCLUDED.timestamp,
           is_validator = EXCLUDED.is_validator;
       `;
@@ -100,6 +134,9 @@ export class RewardsDBService extends BaseDBService {
       const values = batchUpdates.flatMap(u => [
         u.address,
         u.reward.toString(),
+        u.selfStakeReward.toString(),
+        u.commissionReward.toString(),
+        u.delegatorReward.toString(),
         u.blockHeight.toString(),
         u.timestamp.toString(),
         u.isValidator

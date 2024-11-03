@@ -228,7 +228,7 @@ export class SnarkOSDBService {
     return this.validatorDBService.deactivateValidator(address);
   }
 
-  async getCommitteesForBlocks(startBlock: number, endBlock: number): Promise<Map<number, { members: { [address: string]: [number, boolean, number] } }>> {
+  async getCommitteesForBlocks(startBlock: number, endBlock: number): Promise<Map<number, { members: { [address: string]: [number, boolean, number, number] } }>> {
     return this.committeeDBService.getCommitteesForBlocks(startBlock, endBlock);
   }
 

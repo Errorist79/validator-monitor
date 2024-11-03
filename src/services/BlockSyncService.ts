@@ -420,8 +420,9 @@ export class BlockSyncService {
         // Fetch mappings for the author
         const mappings = await this.getMappings(author);
 
-        if (mappings.committeeMapping && mappings.bondedMapping) {
-          const totalStake = mappings.bondedMapping.microcredits + (mappings.delegatedMapping ? mappings.delegatedMapping.microcredits : BigInt(0));
+        if (mappings.delegatedMapping && mappings.committeeMapping && mappings.bondedMapping) {
+          const totalStake = mappings.delegatedMapping ? mappings.delegatedMapping.microcredits : BigInt(0);
+          const selfStake = mappings.bondedMapping?.microcredits ?? BigInt(0);
 
           // Committee Members
           committeeMembers.push({
@@ -429,6 +430,7 @@ export class BlockSyncService {
             first_seen_block: blockHeight,
             last_seen_block: blockHeight,
             total_stake: totalStake.toString(),
+            self_stake: selfStake.toString(),
             is_open: mappings.committeeMapping.is_open,
             commission: BigInt(mappings.committeeMapping.commission).toString(),
             is_active: true,

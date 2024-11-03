@@ -132,55 +132,24 @@ export class AleoSDKService {
   async getCommitteeMapping(address: string): Promise<CommitteeMapping | null> {
     try {
       const rawResult = await this.network.getProgramMappingValue("credits.aleo", "committee", address);
-      const result = this.parseRawResult(rawResult);
-      logger.debug(`Raw committee mapping result for (${address}):`, JSON.stringify(result, null, 2));
+      logger.debug(`Raw committee mapping result for ${address}:`, rawResult);
 
-      if (result === null || result === undefined) {
-        logger.warn(`Committee mapping not found for ${address}`);
+      const result = this.parseRawResult(rawResult);
+      if (!result) return null;
+
+      // Commission değerinin doğru parse edildiğinden emin ol
+      if (typeof result.commission !== 'number' || result.commission === null) {
+        logger.error(`Invalid commission value for ${address}:`, result);
         return null;
       }
 
-      if (typeof result === 'object' && result !== null) {
-        const isOpen = 'is_open' in result ? Boolean(result.is_open) : false;
-        const commission = 'commission' in result ? Number(result.commission) : 0;
-
-        return { is_open: isOpen, commission };
-      }
-
-      logger.warn(`Unexpected committee mapping format for ${address}:`, JSON.stringify(result, null, 2));
-      return null;
+      return {
+        is_open: Boolean(result.is_open),
+        commission: Number(result.commission)
+      };
     } catch (error) {
       logger.error(`Error getting committee mapping for ${address}:`, error);
       return null;
-    }
-  }
-
-  async getBondedMapping(address: string): Promise<BondedMapping> {
-    try {
-      const rawResult = await this.network.getProgramMappingValue("credits.aleo", "bonded", address);
-      const result = this.parseRawResult(rawResult);
-      logger.debug(`Raw bonded mapping result for (${address}):`, JSON.stringify(result, null, 2));
-
-      if (result === null || result === undefined) {
-        logger.warn(`Bonded mapping not found for ${address}`);
-        throw new Error(`Bonded mapping not found for ${address}`);
-      }
-
-      if (typeof result === 'object' && result !== null) {
-        const validator = 'validator' in result ? String(result.validator) : address;
-        const microcredits = 'microcredits' in result ? BigInt(result.microcredits) : BigInt(0);
-
-        return {
-          ...result,
-          microcredits: microcredits.toString(), // Convert BigInt to string
-        };
-      }
-
-      logger.warn(`Unexpected bonded mapping format for ${address}:`, JSON.stringify(result, null, 2));
-      throw new Error(`Unexpected bonded mapping format for ${address}`);
-    } catch (error) {
-      logger.error(`Error getting bonded mapping for ${address}:`, error);
-      throw error;
     }
   }
 
@@ -190,46 +159,96 @@ export class AleoSDKService {
       logger.debug(`Raw delegated mapping result for ${address}:`, result);
 
       if (typeof result === 'string') {
+        const microcreditsStr = this.cleanNumericValue(result);
         return {
           delegator: address,
-          microcredits: BigInt(result.replace('u64', ''))
+          microcredits: BigInt(microcreditsStr) // string'i BigInt'e çevir
         };
       }
 
-      logger.warn(`Unexpected delegated mapping format for ${address}:`, result);
       return null;
     } catch (error) {
-      logger.error(`Error fetching delegated mapping for ${address}:`, error);
+      logger.error(`Error getting delegated mapping for ${address}:`, error);
       return null;
     }
+  }
+
+  async getBondedMapping(address: string): Promise<BondedMapping | null> {
+    try {
+      const rawResult = await this.network.getProgramMappingValue("credits.aleo", "bonded", address);
+      const result = this.parseRawResult(rawResult);
+      logger.debug(`Raw bonded mapping result for ${address}:`, result);
+
+      if (!result) return null;
+
+      const microcreditsStr = this.cleanNumericValue(result.microcredits);
+      return {
+        validator: result.validator || address,
+        microcredits: BigInt(microcreditsStr) // string'i BigInt'e çevir
+      };
+    } catch (error) {
+      logger.error(`Error getting bonded mapping for ${address}:`, error);
+      return null;
+    }
+  }
+
+  private cleanNumericValue(value: string | number | bigint): string {
+    const strValue = value.toString();
+    // Suffix'leri temizle (u64, n, vb.)
+    return strValue.replace(/[a-zA-Z]+\d*$/, '');
   }
 
   private parseRawResult(rawResult: any): any {
     if (typeof rawResult !== 'string') {
       return rawResult;
     }
-  
-    let cleanedResult = rawResult;
-  
+
     try {
-      // Wrap key names in double quotes
+      // Eğer sadece sayı + suffix formatındaysa (delegated mapping için)
+      if (/^\d+u\d+$/.test(rawResult.trim())) {
+        return rawResult.replace(/u\d+$/, '');
+      }
+
+      // JSON benzeri string için
+      let cleanedResult = rawResult
+        // Yeni satır karakterlerini temizle
+        .replace(/\\n/g, '')
+        .trim();
+
+      // Key'leri quote içine al
       cleanedResult = cleanedResult.replace(/([{,]\s*)(\w+)\s*:/g, '$1"$2":');
-  
-      // Wrap string values in double quotes
-      cleanedResult = cleanedResult.replace(/:\s*([a-zA-Z0-9_]+)([,}])/g, ': "$1"$2');
-  
-      // Remove type suffixes from numeric values
-      cleanedResult = cleanedResult.replace(/(\d+)u(8|16|32|64|128)/g, '$1');
-  
+
+      // Değerleri işle
+      cleanedResult = cleanedResult.replace(/:[\s]*([^,}\s]+)/g, (match, value) => {
+        // Boolean değerler
+        if (value === 'true' || value === 'false') {
+          return `: ${value}`;
+        }
+        // Commission değeri (u8 suffix'li)
+        if (/^\d+u8$/.test(value)) {
+          return `: ${value.replace('u8', '')}`;
+        }
+        // Diğer sayısal değerler (u64 suffix'li)
+        if (/^\d+u64$/.test(value)) {
+          return `: "${value.replace('u64', '')}"`;
+        }
+        // Aleo adresleri
+        if (value.startsWith('aleo1')) {
+          return `: "${value}"`;
+        }
+        return `: "${value}"`;
+      });
+
+      logger.debug('Cleaned result before parsing:', cleanedResult);
       return JSON.parse(cleanedResult);
     } catch (error) {
       logger.error('Error parsing raw result:', error);
-      logger.error('Cleaned result:', cleanedResult);
-      return null; // Return null if parsing fails
+      logger.error('Raw result:', rawResult);
+      return null;
     }
   }
 
-  private parseCommission(commission: any): number | null {
+/*   private parseCommission(commission: any): number | null {
     if (typeof commission === 'number') {
       return commission;
     }
@@ -246,7 +265,7 @@ export class AleoSDKService {
     }
     logger.warn(`Unexpected microcredits format:`, microcredits);
     return null;
-  }
+  } */
 
   async getTotalNetworkStake(): Promise<bigint> {
     try {
@@ -408,22 +427,35 @@ export class AleoSDKService {
     }
   }
 
-  async getMappings(author: string): Promise<{
+  async getMappings(address: string): Promise<{
     committeeMapping: CommitteeMapping | null;
     bondedMapping: BondedMapping | null;
     delegatedMapping: DelegatedMapping | null;
   }> {
     try {
       const [committeeMapping, bondedMapping, delegatedMapping] = await Promise.all([
-        this.getCommitteeMapping(author),
-        this.getBondedMapping(author),
-        this.getDelegatedMapping(author)
+        this.getCommitteeMapping(address),
+        this.getBondedMapping(address),
+        this.getDelegatedMapping(address)
       ]);
 
-      return { committeeMapping, bondedMapping, delegatedMapping };
+      // Null check ve güvenli dönüşümler
+      return {
+        committeeMapping: committeeMapping ? {
+          is_open: Boolean(committeeMapping.is_open),
+          commission: Number(committeeMapping.commission)
+        } : null,
+        bondedMapping: bondedMapping ? {
+          validator: bondedMapping.validator,
+          microcredits: BigInt(bondedMapping.microcredits) // string'i BigInt'e çevir
+        } : null,
+        delegatedMapping: delegatedMapping ? {
+          delegator: delegatedMapping.delegator,
+          microcredits: BigInt(delegatedMapping.microcredits) // string'i BigInt'e çevir
+        } : null
+      };
     } catch (error) {
-      logger.error(`Error fetching mappings for author ${author}:`, error);
-      // Return an object even in case of error
+      logger.error(`Error getting mappings for ${address}:`, error);
       return {
         committeeMapping: null,
         bondedMapping: null,
